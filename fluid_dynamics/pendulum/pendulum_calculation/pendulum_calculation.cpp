@@ -9,7 +9,7 @@ int main() {
     const double sigma = 0.01;    // Коэффициент затухания, с^-1
     
     // Собственная частота незатухающих колебаний
-    const double omega0 = 0.1;
+    const double omega0 = 0.001;
     
     // Частота затухающих колебаний w = sqrt(w0^2 - sigma^2)
     const double omega = std::sqrt(omega0 * omega0 - sigma * sigma);
@@ -24,7 +24,7 @@ int main() {
     // Открываем CSV файл для записи результатов
     std::ofstream file("pendulum_results.csv");
     if (!file.is_open()) {
-        std::cerr << "Ошибка при открытии файла!" << std::endl;
+        std::cerr << "Error opening file" << std::endl;
         return 1;
     }
 
@@ -50,7 +50,7 @@ int main() {
     }
 
     file.close();
-    std::cout << "Расчет успешно завершен! Результаты сохранены в 'pendulum_results.csv'." << std::endl;
+    std::cout << "Calculation completed successfully! Results saved in 'pendulum_results.csv'." << std::endl;
 
     return 0;
 }
