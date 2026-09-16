@@ -1,8 +1,8 @@
-PWD c:/Users/TSM/Desktop/homework/Методы вычислений/5_lab_n1/document
+PWD c:/Users/TSM/Desktop/homework_5/Методы вычислений/5_lab_n1/document
 INPUT c:/texlive/2026/texmf.cnf
 INPUT c:/texlive/2026/texmf-dist/web2c/texmf.cnf
 INPUT c:/texlive/2026/texmf-var/web2c/xetex/xelatex.fmt
-INPUT c:/Users/TSM/Desktop/homework/Методы вычислений/5_lab_n1/document/main.tex
+INPUT c:/Users/TSM/Desktop/homework_5/Методы вычислений/5_lab_n1/document/main.tex
 OUTPUT main.log
 INPUT c:/texlive/2026/texmf-dist/tex/latex/base/article.cls
 INPUT c:/texlive/2026/texmf-dist/tex/latex/base/article.cls
@@ -92,8 +92,8 @@ INPUT c:/texlive/2026/texmf-dist/tex/latex/unicode-math/unicode-math.sty
 INPUT c:/texlive/2026/texmf-dist/tex/latex/unicode-math/unicode-math.sty
 INPUT c:/texlive/2026/texmf-dist/tex/latex/l3kernel/expl3.sty
 INPUT c:/texlive/2026/texmf-dist/tex/latex/l3kernel/expl3.sty
-INPUT c:/texlive/2026/texmf-dist/tex/latex/l3kernel/l3backend-xetex.def
-INPUT c:/texlive/2026/texmf-dist/tex/latex/l3kernel/l3backend-xetex.def
+INPUT c:/texlive/2026/texmf-dist/tex/latex/l3backend/l3backend-xetex.def
+INPUT c:/texlive/2026/texmf-dist/tex/latex/l3backend/l3backend-xetex.def
 INPUT c:/texlive/2026/texmf-dist/tex/latex/unicode-math/unicode-math-xetex.sty
 INPUT c:/texlive/2026/texmf-dist/tex/latex/unicode-math/unicode-math-xetex.sty
 INPUT c:/texlive/2026/texmf-dist/tex/latex/l3packages/xparse/xparse.sty
