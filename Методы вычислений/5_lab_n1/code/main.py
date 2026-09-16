@@ -1,9 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from scipy.integrate import solve_ivp
+from scipy.integrate import solve_ivp, ODESolution
+from typing import List, Sequence
 
-def robertson_sys(t, y):
+def robertson_sys(t: float, y: Sequence[float]) -> List[float]:
+    """Правая часть жесткой системы дифференциальных уравнений Робертсона."""
     k1, k2, k3 = 0.04, 3e7, 1e4
     y1, y2, y3 = y
     
@@ -17,7 +19,8 @@ t_span = (0, 1e11)  # В системе Робертсона обычно бер
 
 sol1 = solve_ivp(robertson_sys, t_span, y0, method='BDF', dense_output=True)
 
-def e5_sys(t, y):
+def e5_sys(t: float, y: Sequence[float]) -> List[float]:
+    """Правая часть системы химической кинетики E5."""
     A, B, C, M = 7.89e-10, 1.1e7, 1.13e3, 1e6
     y1, y2, y3, y4 = y
     
@@ -32,7 +35,8 @@ t_span = (0, 1e13)
 
 sol2 = solve_ivp(e5_sys, t_span, y0, method='BDF', dense_output=True)
 
-def bio_sys(t, y):
+def bio_sys(t: float, y: Sequence[float]) -> List[float]:
+    """Правая часть биологической системы дифференциальных уравнений."""
     y1, y2, y3, y4, y5, y6, y7, y8 = y
     
     dy1 = -1.71 * y1 + 0.43 * y2 + 8.23 * y3 + 0.0007
@@ -51,13 +55,14 @@ y0 = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0057]
 t_span = (0, 421.8122)
 sol3 = solve_ivp(bio_sys, t_span, y0, method='Radau', dense_output=True)
 
-# --- Графики ---
+# ГРАФИКИ
 # Равномерная по логарифму сетка t (начинаем с маленького t, т.к. log(0) не определён)
 
 PICTURES_DIR = Path(__file__).resolve().parent.parent / 'pictures'
 PICTURES_DIR.mkdir(exist_ok=True)
 
-def plot_system(sol, t_max, filename):
+def plot_system(sol: ODESolution, t_max: float, filename: str) -> None:
+    """Строит и сохраняет в логарифмическом масштабе графики компонент решения системы ОДУ."""
     t = np.logspace(-8, np.log10(t_max), 500)
     y = sol.sol(t)
     n = len(y)
