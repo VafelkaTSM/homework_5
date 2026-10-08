@@ -1,2 +1,6 @@
-main
-simulation_log.csv
+.vscode
+CMakeLists.txt
+build
+report/
+!report/main.tex
+!report/main.pdf
