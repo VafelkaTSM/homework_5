@@ -1,6 +1,6 @@
 .vscode
 CMakeLists.txt
 build
-report/
+report/*
 !report/main.tex
 !report/main.pdf
