@@ -1,0 +1,15 @@
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\bin\Debug\net10.0\heat_transfer.exe
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\bin\Debug\net10.0\heat_transfer.deps.json
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\bin\Debug\net10.0\heat_transfer.runtimeconfig.json
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\bin\Debug\net10.0\heat_transfer.dll
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\bin\Debug\net10.0\heat_transfer.pdb
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\heat_transfer.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\heat_transfer.AssemblyInfoInputs.cache
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\heat_transfer.AssemblyInfo.cs
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\heat_transfer.csproj.CoreCompileInputs.cache
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\heat_transfer.sourcelink.json
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\heat_transfer.dll
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\refint\heat_transfer.dll
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\heat_transfer.pdb
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\heat_transfer.genruntimeconfig.cache
+C:\Users\TSM\Desktop\homework_5\fluid_dynamics\heat_transfer\obj\Debug\net10.0\ref\heat_transfer.dll

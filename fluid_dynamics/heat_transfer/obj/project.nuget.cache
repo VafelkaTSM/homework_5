@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "dgSpecHash": "3+2mzvOqk2A=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\TSM\\Desktop\\homework_5\\fluid_dynamics\\heat_transfer\\heat_transfer.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\TSM\\.nuget\\packages\\csfml\\3.0.0\\csfml.3.0.0.nupkg.sha512",
+    "C:\\Users\\TSM\\.nuget\\packages\\sfml.audio\\3.0.0\\sfml.audio.3.0.0.nupkg.sha512",
+    "C:\\Users\\TSM\\.nuget\\packages\\sfml.graphics\\3.0.0\\sfml.graphics.3.0.0.nupkg.sha512",
+    "C:\\Users\\TSM\\.nuget\\packages\\sfml.net\\3.0.0\\sfml.net.3.0.0.nupkg.sha512",
+    "C:\\Users\\TSM\\.nuget\\packages\\sfml.system\\3.0.0\\sfml.system.3.0.0.nupkg.sha512",
+    "C:\\Users\\TSM\\.nuget\\packages\\sfml.window\\3.0.0\\sfml.window.3.0.0.nupkg.sha512"
+  ],
+  "logs": []
+}
