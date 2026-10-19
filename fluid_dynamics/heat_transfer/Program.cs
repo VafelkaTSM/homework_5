@@ -1,5 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
 using System.Security.AccessControl;
 
 namespace program;
@@ -29,6 +30,25 @@ public class NArray<T>: IEnumerable<T>
     private int[] _shape;
     private int[] _cumlength;
     private T[] _array;
+
+    public int[] Shape()
+    {
+        int[] copy = new int[_shape.Length];
+        System.Array.Copy(_shape, copy, _shape.Length);
+        return copy;
+    }
+    public int[] Cumlength()
+    {
+        int[] copy = new int[_cumlength.Length];
+        System.Array.Copy(_cumlength, copy, _shape.Length);
+        return copy;
+    }
+    public T[] Array()
+    {
+        T[] newArray = new T[_array.Length];
+        System.Array.Copy(_array, newArray, _array.Length);
+        return newArray;
+    }
 
     public NArray(int[] shape)
     {
@@ -86,31 +106,10 @@ public class NArray<T>: IEnumerable<T>
         }
     }
 
-    public NArray(System.Array rowArray)
+    public NArray(NArray<T> narray)
     {
-        int rank = rowArray.Rank;
-        _shape = new int[rank];
-        for (int i = 0; i < rank; i ++)
-        {
-            _shape[i] = rowArray.GetLength(i);
-        }
-        
+        _shape = narray.
     }
-
-    public T[] Shape()
-    {
-        T[] newArray = new T[_array.Length];
-        Array.Copy(_shape, newArray, _array.Length);
-        return newArray;
-    }
-    public T[] toArray()
-    {
-        T[] newArray = new T[_array.Length];
-        Array.Copy(_array, newArray, _array.Length);
-        return newArray;
-    }
-
-
 
     public T this[params int[] indices]
     {
