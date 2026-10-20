@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace NArray;
 
 public class NArray<T>
@@ -88,6 +90,8 @@ public class NArray<T>
         _cumlength = narray.Cumlength();
         _array = narray.Array();
     }
+
+    public NArray<T> Copy() => new NArray<T>(this);
 
     public T this[params int[] indices]
     {

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO.Compression;
 using NArray;
 
 public class Cell
@@ -48,7 +49,7 @@ public class Face
 public class Mesh {
     int[] _shape;
     NArray<Cell> _cellList;
-    NArray<Face> _borderXList, _borderYList, _borderZList;
+    NArray<Face> _faceXList, _faceYList, _faceZList;
 
     public int[] Shape()
     {
@@ -56,36 +57,30 @@ public class Mesh {
         System.Array.Copy(_shape, copy, _shape.Length);
         return copy;
     }
-    public int[] CellList()
+    public NArray<Cell> CellList()
     {
-        int[] copy = new int[_cellList.Length];
-        System.Array.Copy(_cellList, copy, _cellList.Length);
-        return copy;
+        return _cellList.Copy();
     }
-    public int[] BorderXList()
+    public NArray<Face> FaceXList()
     {
-        int[] copy = new int[_borderXList.Length];
-        System.Array.Copy(_borderXList, copy, _borderXList.Length);
-        return copy;
+        return _faceXList.Copy();
     }
-    public int[] BorderYList()
+    public NArray<Face> FaceYList()
     {
-        int[] copy = new int[_borderYList.Length];
-        System.Array.Copy(_borderYList, copy, _borderYList.Length);
-        return copy;
+        return _faceYList.Copy();
     }
-    public int[] BorderZList()
+    public NArray<Face> FaceZList()
     {
-        int[] copy = new int[_borderZList.Length];
-        System.Array.Copy(_borderZList, copy, _borderZList.Length);
-        return copy;
+        return _faceZList.Copy();
     }
 
     public Mesh(int X, int Y, int Z) 
     {
-        if (X == 0 || Y == 0 || Z == 0) 
+        if (X <= 0 || Y <= 0 || Z <= 0) 
         {
             throw new ArgumentOutOfRangeException("X or Y or Z <= 0");
         }
+
+        
     }
 }
