@@ -8,7 +8,7 @@ namespace program;
 
 
 class Program {
-    void Main() {
+    static void Main() {
 
     }
 }

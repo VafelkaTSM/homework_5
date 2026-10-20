@@ -18,7 +18,7 @@ public class NArray<T>
     public int[] Cumlength()
     {
         int[] copy = new int[_cumlength.Length];
-        System.Array.Copy(_cumlength, copy, _shape.Length);
+        System.Array.Copy(_cumlength, copy, _cumlength.Length);
         return copy;
     }
     public T[] Array()
@@ -33,7 +33,7 @@ public class NArray<T>
         if (shape == null || shape.Length == 0) {
             throw new ArgumentOutOfRangeException("Shape is null or zero length shape.");
         }
-        for (int i = 0; i < shape.Length - 1; i ++)
+        for (int i = 0; i < shape.Length; i ++)
         {
             if (shape[i] < 1)
             {
@@ -41,18 +41,22 @@ public class NArray<T>
             }
         }
 
+        _shape = new int[shape.Length];
+        System.Array.Copy(shape, _shape, shape.Length);
+
         int length = 1;
-        for (int i = 0; i < shape.Length - 1; i ++)
+        for (int i = 0; i < _shape.Length; i ++)
         {
-            length *= shape[i];
+            length *= _shape[i];
         }
-        _shape = shape;
-        _cumlength = new int[length];
+
         _array = new T[length];
-        _cumlength[_shape.Length - 1] = 1;
-        for (int i = _shape.Length - 1; i >= 1; i--)
+        _cumlength = new int[_shape.Length];
+        int stride = 1;
+        for (int i = _shape.Length - 1; i >= 0; i--)
         {
-            _cumlength[i - 1] = length;
+            _cumlength[i] = stride;
+            stride *= _shape[i];
         }
     }
 
@@ -61,8 +65,12 @@ public class NArray<T>
         if (shape == null || shape.Length == 0) {
             throw new ArgumentOutOfRangeException("Shape is null or zero length shape.");
         }
+        if (rowArray == null)
+        {
+            throw new ArgumentOutOfRangeException("rowArray is null.");
+        }
         int length = 1;
-        for (int i = 0; i < shape.Length - 1; i ++)
+        for (int i = 0; i < shape.Length; i ++)
         {
             if (shape[i] < 1)
             {
@@ -75,12 +83,18 @@ public class NArray<T>
             throw new ArgumentOutOfRangeException($"rowArray doesn't fit in terms of shape.");
         }
 
-        _shape = shape;
-        _array = rowArray;
-        _cumlength = new int[length];
-        for (int i = _shape.Length - 1; i >= 1; i--)
+        _shape = new int[shape.Length];
+        System.Array.Copy(shape, _shape, shape.Length);
+
+        _array = new T[length];
+        System.Array.Copy(rowArray, _array, length);
+
+        _cumlength = new int[_shape.Length];
+        int stride = 1;
+        for (int i = _shape.Length - 1; i >= 0; i--)
         {
-            _cumlength[i - 1] = length;
+            _cumlength[i] = stride;
+            stride *= _shape[i];
         }
     }
 
@@ -97,21 +111,19 @@ public class NArray<T>
     {
         get
         {
-            if (indices.Length > _shape.Length)
+            if (indices == null || indices.Length != _shape.Length)
             {
-                throw new ArgumentOutOfRangeException($"number of indices too large.");
+                throw new ArgumentOutOfRangeException("number of indices is not equal to the rank.");
             }
+
+            int index = 0;
             for (int i = 0; i < _shape.Length; i ++)
             {
-                if (indices[i] > _shape[i])
+                if (indices[i] < 0 || indices[i] >= _shape[i])
                 {
-                    throw new ArgumentOutOfRangeException($"indices[i] == {indices[i]} out of range");
+                    throw new ArgumentOutOfRangeException($"indices[{i}] == {indices[i]} out of range");
                 }
-            }
-            int index = 0;
-            for (int i = _shape.Length - 1; i >= 0; i --)
-            {
-                index += _shape[i] * _cumlength[i];
+                index += indices[i] * _cumlength[i];
             }
             
             return _array[index];
@@ -119,21 +131,19 @@ public class NArray<T>
 
         set
         {
-            if (indices.Length > _shape.Length)
+            if (indices == null || indices.Length != _shape.Length)
             {
-                throw new ArgumentOutOfRangeException($"number of indices too large.");
+                throw new ArgumentOutOfRangeException("number of indices is not equal to the rank.");
             }
+            
+            int index = 0;
             for (int i = 0; i < _shape.Length; i ++)
             {
-                if (indices[i] > _shape[i])
+                if (indices[i] < 0 || indices[i] >= _shape[i])
                 {
-                    throw new ArgumentOutOfRangeException($"indices[i] == {indices[i]} out of range");
+                    throw new ArgumentOutOfRangeException($"indices[{i}] == {indices[i]} out of range");
                 }
-            }
-            int index = 0;
-            for (int i = _shape.Length - 1; i >= 0; i --)
-            {
-                index += _shape[i] * _cumlength[i];
+                index += indices[i] * _cumlength[i];
             }
 
             _array[index] = value;
