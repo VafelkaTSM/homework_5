@@ -1,6 +1,6 @@
-using System.ComponentModel;
-using System.IO.Compression;
-using NArray;
+using System.Security.AccessControl;
+
+namespace ThermConductSim;
 
 public class Cell
 {
@@ -48,8 +48,8 @@ public class Face
 
 public class Mesh {
     int[] _shape;
-    NArray<Cell> _cellList;
-    NArray<Face> _faceXList, _faceYList, _faceZList;
+    Cell[,,] _cellList;
+    Face[,,] _faceXList, _faceYList, _faceZList;
 
     public int[] Shape()
     {
@@ -57,21 +57,21 @@ public class Mesh {
         System.Array.Copy(_shape, copy, _shape.Length);
         return copy;
     }
-    public NArray<Cell> CellList()
+    public Cell[,,] CellList()
     {
-        return _cellList.Copy();
+        return (Cell[,,])_cellList.Clone();
     }
-    public NArray<Face> FaceXList()
+    public Face[,,] FaceXList()
     {
-        return _faceXList.Copy();
+        return (Face[,,])_faceXList.Clone();
     }
-    public NArray<Face> FaceYList()
+    public Face[,,] FaceYList()
     {
-        return _faceYList.Copy();
+        return (Face[,,])_faceYList.Clone();
     }
-    public NArray<Face> FaceZList()
+    public Face[,,] FaceZList()
     {
-        return _faceZList.Copy();
+        return (Face[,,])_faceZList.Clone();
     }
 
     public Mesh(int X, int Y, int Z) 
@@ -82,10 +82,10 @@ public class Mesh {
         }
 
         _shape = new int[] { X, Y, Z };
-        _cellList = new NArray<Cell>(new int[] { X, Y, Z });
-        _faceXList = new NArray<Face>(new int[] { X + 1, Y, Z });
-        _faceYList = new NArray<Face>(new int[] { X, Y + 1, Z });
-        _faceZList = new NArray<Face>(new int[] { X, Y, Z + 1 });
+        _cellList = new Cell[X, Y, Z];
+        _faceXList = new Face[X + 1, Y, Z];
+        _faceYList = new Face[X, Y + 1, Z];
+        _faceZList = new Face[X, Y, Z + 1];
 
         for (int y = 0; y < Y; y++)
         {
@@ -160,6 +160,25 @@ public class Mesh {
             for (int y = 0; y < Y; y++)
             {
                 _faceZList[x, y, Z] = CreateFaceZ(x, y, Z, true);
+            }
+        }
+    }
+
+    public void TestTempDistr()
+    {
+        double cx = _shape[0] / 2.0;
+        double cy = _shape[1] / 2.0;
+        double cz = _shape[2] / 2.0;
+
+        for (int x = 0; x < _shape[0]; x++)
+        {
+            for (int y = 0; y < _shape[1]; y++)
+            {
+                for (int z = 0; z < _shape[2]; z++)
+                {
+                    double rad = Math.Sqrt(Math.Pow(x - cx, 2) + Math.Pow(y - cy, 2) + Math.Pow(z - cz, 2));
+                    _cellList[x, y, z].Temp = Math.Max(0.0, 100.0 - rad * 3.5);
+                }
             }
         }
     }

@@ -1,5 +1,3 @@
-using System.Runtime.CompilerServices;
-
 namespace NArray;
 
 public class NArray<T>
