@@ -1,12 +1,14 @@
-﻿using System;
+using System.Globalization;
+using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
+using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
-using System.Runtime.InteropServices;
+using Avalonia.Threading;
 using ThermConductSim;
 
 namespace ThermSliceViewer;
@@ -14,30 +16,66 @@ namespace ThermSliceViewer;
 public class MainWindow : Window
 {
     private readonly Mesh _mesh;
-    private readonly Cell[,,] _cells;
     private readonly int _nx, _ny, _nz;
+
+    // Текущие температуры ячеек (снимок, сделанный на потоке расчёта)
+    private double[,,] _temps;
+
+    // Начальные условия первого запуска — для кнопки «Сброс»
+    private readonly double[,,] _initialTemps;
+
+    // Диапазон температур для цветовой шкалы
+    private double _colorMin, _colorMax;
 
     // Компоненты интерфейса
     private readonly ComboBox _axisComboBox;
     private readonly Slider _sliceSlider;
     private readonly TextBlock _sliceInfoText;
     private readonly Image _sliceImageView;
+    private readonly TextBox _iterationsBox;
+    private readonly TextBox _deltaTimeBox;
+    private readonly TextBox _courantBox;
+    private readonly TextBox _updatePeriodBox;
+    private readonly Button _startButton;
+    private readonly Button _stopButton;
+    private readonly Button _resetButton;
+    private readonly TextBlock _statusText;
+    private readonly SumDeltaChart _chart;
+
+    // Тёмное оформление: чёрный фон и белый шрифт
+    private static readonly IBrush WindowBrush = new SolidColorBrush(Colors.Black);
+    private static readonly IBrush InputBackgroundBrush = new SolidColorBrush(Color.Parse("#FF151515"));
+    private static readonly IBrush InputBorderBrush = new SolidColorBrush(Color.Parse("#FF666666"));
+    private static readonly IBrush SeparatorBrush = new SolidColorBrush(Color.Parse("#FF444444"));
+
+    private bool _running;
+    private bool _closed;
+    private double _lastCourant = 0.1;
 
     public MainWindow(Mesh mesh)
     {
-        Title = "Визуализация срезов сетки теплопередачи";
-        Width = 800;
-        Height = 650;
+        Title = "Теплопередача: срезы сетки и сумма модулей изменений температуры";
+        Width = 980;
+        Height = 920;
+        Background = WindowBrush;
+        RequestedThemeVariant = ThemeVariant.Dark;
 
         // 1. Инициализация сетки и распределения температуры
         _mesh = mesh;
-        _cells = _mesh.CellList();
         int[] shape = _mesh.Shape();
         _nx = shape[0];
         _ny = shape[1];
         _nz = shape[2];
 
-        // 2. Создание панели управления срезами
+        _temps = _mesh.TempSnapshot();
+        _initialTemps = (double[,,])_temps.Clone();
+        (_colorMin, _colorMax) = FindRange(_temps);
+        if (_colorMax - _colorMin < 1e-9)
+        {
+            _colorMax = _colorMin + 1.0;
+        }
+
+        // 2. Панель управления срезами
         var controlPanel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -45,13 +83,8 @@ public class MainWindow : Window
             Margin = new Thickness(10)
         };
 
-        controlPanel.Children.Add(new TextBlock
-        {
-            Text = "Нормаль среза:",
-            VerticalAlignment = VerticalAlignment.Center
-        });
+        controlPanel.Children.Add(MakeLabel("Нормаль среза:"));
 
-        // Выпадающий список для выбора направления нормали
         _axisComboBox = new ComboBox
         {
             ItemsSource = new[] { "Ось X (плоскость YZ)", "Ось Y (плоскость XZ)", "Ось Z (плоскость XY)" },
@@ -60,13 +93,8 @@ public class MainWindow : Window
         };
         controlPanel.Children.Add(_axisComboBox);
 
-        controlPanel.Children.Add(new TextBlock
-        {
-            Text = "Индекс слоя:",
-            VerticalAlignment = VerticalAlignment.Center
-        });
+        controlPanel.Children.Add(MakeLabel("Индекс слоя:"));
 
-        // Ползунок выбора номера среза вдоль выбранной оси
         _sliceSlider = new Slider
         {
             Minimum = 0,
@@ -79,11 +107,7 @@ public class MainWindow : Window
         };
         controlPanel.Children.Add(_sliceSlider);
 
-        _sliceInfoText = new TextBlock
-        {
-            Text = $"Срез {_sliceSlider.Value} / {_nz - 1}",
-            VerticalAlignment = VerticalAlignment.Center
-        };
+        _sliceInfoText = MakeLabel($"Срез {_sliceSlider.Value} / {_nz - 1}");
         controlPanel.Children.Add(_sliceInfoText);
 
         // 3. Элемент Image для вывода пиксельной карты среза
@@ -94,20 +118,150 @@ public class MainWindow : Window
         };
         RenderOptions.SetBitmapInterpolationMode(_sliceImageView, BitmapInterpolationMode.None);
 
-        // 4. Корневой контейнер компоновки DockPanel
-        var rootDock = new DockPanel();
-        DockPanel.SetDock(controlPanel, Dock.Top);
-        rootDock.Children.Add(controlPanel);
-        rootDock.Children.Add(_sliceImageView);
+        // 4. Панель параметров расчёта и график (снизу окна)
+        _iterationsBox = MakeInputBox("200", 90, "Целое число итераций (шагов по времени)");
+        _deltaTimeBox = MakeInputBox("1,0", 90, "Шаг по времени одной итерации, с (можно дробное: 0,5 или 0.5)");
+        _courantBox = MakeInputBox("0,15", 90, "Число Куранта C = a*dt/h^2. Для явной 3D-схемы устойчиво C <= 1/6");
+        _updatePeriodBox = MakeInputBox("1", 70, "Через сколько итераций обновлять интерфейс (1 — каждую итерацию)");
 
-        Content = rootDock;
+        _startButton = new Button
+        {
+            Content = "Старт расчёта",
+            Margin = new Thickness(12, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
 
-        // 5. Подписка на события пользовательского ввода
+        _stopButton = new Button
+        {
+            Content = "Остановить",
+            Margin = new Thickness(8, 0, 0, 0),
+            IsEnabled = false,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        _resetButton = new Button
+        {
+            Content = "Сброс",
+            Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        // Параметры расчёта — первой строкой, кнопки — второй (чтобы всё помещалось по ширине окна)
+        var paramsRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8
+        };
+        paramsRow.Children.Add(MakeLabel("Итераций:"));
+        paramsRow.Children.Add(_iterationsBox);
+        paramsRow.Children.Add(MakeLabel("Шаг dt, с:"));
+        paramsRow.Children.Add(_deltaTimeBox);
+        paramsRow.Children.Add(MakeLabel("Число Куранта:"));
+        paramsRow.Children.Add(_courantBox);
+        paramsRow.Children.Add(MakeLabel("Обновлять каждые:"));
+        paramsRow.Children.Add(_updatePeriodBox);
+        paramsRow.Children.Add(MakeLabel("итераций"));
+
+        var buttonsRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        buttonsRow.Children.Add(_startButton);
+        buttonsRow.Children.Add(_stopButton);
+        buttonsRow.Children.Add(_resetButton);
+
+        var settingsPanel = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Margin = new Thickness(10, 0, 10, 0)
+        };
+        settingsPanel.Children.Add(paramsRow);
+        settingsPanel.Children.Add(buttonsRow);
+
+        _statusText = new TextBlock
+        {
+            Text = "Готов к расчёту.",
+            Foreground = Brushes.White,
+            Margin = new Thickness(10, 6, 10, 0),
+            TextWrapping = TextWrapping.Wrap
+        };
+
+        // График суммы модулей изменений температуры по ячейкам
+        _chart = new SumDeltaChart
+        {
+            Height = 190,
+            Margin = new Thickness(10, 6, 10, 8)
+        };
+
+        var bottomPanel = new StackPanel
+        {
+            Orientation = Orientation.Vertical
+        };
+        bottomPanel.Children.Add(new Border
+        {
+            BorderBrush = SeparatorBrush,
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(0, 8, 0, 0),
+            Child = settingsPanel
+        });
+        bottomPanel.Children.Add(_statusText);
+        bottomPanel.Children.Add(_chart);
+
+        // 5. Корневой контейнер: строка параметров, изображение среза (растягивается), нижняя панель
+        var rootGrid = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,*,Auto")
+        };
+        Grid.SetRow(controlPanel, 0);
+        Grid.SetRow(_sliceImageView, 1);
+        Grid.SetRow(bottomPanel, 2);
+        rootGrid.Children.Add(controlPanel);
+        rootGrid.Children.Add(_sliceImageView);
+        rootGrid.Children.Add(bottomPanel);
+
+        Content = rootGrid;
+
+        // 6. Обработчики событий пользовательского ввода
         _axisComboBox.SelectionChanged += (s, e) => OnAxisChanged();
         _sliceSlider.ValueChanged += (s, e) => UpdateSliceView();
+        _startButton.Click += (s, e) => StartSimulation();
+        _stopButton.Click += (s, e) => RequestStop();
+        _resetButton.Click += (s, e) => ResetSimulation();
+        Closed += (s, e) => _closed = true;
 
         // Отрисовка первого кадра
         UpdateSliceView();
+        UpdateStatus($"Исходное состояние: {FormatTempRange(_colorMin, _colorMax)}, "
+            + $"ячеек {_nx}x{_ny}x{_nz}, h = {_mesh.CellSize * 1000:0.###} мм.");
+    }
+
+    // ---------- Создание элементов оформления ----------
+
+    /// <summary>Надпись белым шрифтом по центру строки.</summary>
+    private static TextBlock MakeLabel(string text) => new()
+    {
+        Text = text,
+        Foreground = Brushes.White,
+        VerticalAlignment = VerticalAlignment.Center
+    };
+
+    /// <summary>Поле ввода в тёмном оформлении (чёрный фон, белый текст, светлая рамка).</summary>
+    private static TextBox MakeInputBox(string text, double width, string tooltip)
+    {
+        var box = new TextBox
+        {
+            Text = text,
+            Width = width,
+            Background = InputBackgroundBrush,
+            Foreground = Brushes.White,
+            CaretBrush = Brushes.White,
+            BorderBrush = InputBorderBrush,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        ToolTip.SetTip(box, tooltip);
+        return box;
     }
 
     private void OnAxisChanged()
@@ -130,8 +284,9 @@ public class MainWindow : Window
 
     private void UpdateSliceView()
     {
-        int sliceIdx = (int)Math.Round(_sliceSlider.Value);
         int axis = _axisComboBox.SelectedIndex;
+        int maxIndex = axis switch { 0 => _nx - 1, 1 => _ny - 1, _ => _nz - 1 };
+        int sliceIdx = Math.Clamp((int)Math.Round(_sliceSlider.Value), 0, maxIndex);
 
         int width, height;
         if (axis == 0)      { width = _ny; height = _nz; }
@@ -145,6 +300,8 @@ public class MainWindow : Window
             new Vector(96, 96),
             PixelFormat.Bgra8888,
             AlphaFormat.Opaque);
+
+        double sliceMin = double.MaxValue, sliceMax = double.MinValue;
 
         using (var buffer = bitmap.Lock())
         {
@@ -161,12 +318,15 @@ public class MainWindow : Window
                 {
                     double temp = axis switch
                     {
-                        0 => _cells[sliceIdx, u, v].Temp,
-                        1 => _cells[u, sliceIdx, v].Temp,
-                        _ => _cells[u, v, sliceIdx].Temp
+                        0 => _temps[sliceIdx, u, v],
+                        1 => _temps[u, sliceIdx, v],
+                        _ => _temps[u, v, sliceIdx]
                     };
 
-                    var (b, g, r) = TemperatureToRgb(temp, 0.0, 100.0);
+                    if (temp < sliceMin) sliceMin = temp;
+                    if (temp > sliceMax) sliceMax = temp;
+
+                    var (b, g, r) = TemperatureToRgb(temp, _colorMin, _colorMax);
 
                     // Смещение пикселя внутри строки (4 байта на пиксель в формате BGRA)
                     int pixelOffset = rowOffset + u * 4;
@@ -177,17 +337,267 @@ public class MainWindow : Window
                 }
             }
 
-            // buffer.Address — это безопасный IntPtr. 
+            // buffer.Address — это безопасный IntPtr.
             // Marshal.Copy сам переносит данные из управляемого массива в нативный буфер битмапа.
             Marshal.Copy(rawBytes, 0, buffer.Address, rawBytes.Length);
         }
 
         _sliceImageView.Source = bitmap;
+
+        if (sliceMin <= sliceMax)
+        {
+            _sliceInfoText.Text = $"Срез {sliceIdx} / {_sliceSlider.Maximum}, {FormatTempRange(sliceMin, sliceMax)}";
+        }
+    }
+
+    /// <summary>Запуск расчёта в фоновом потоке с обновлением интерфейса в реальном времени.</summary>
+    private async void StartSimulation()
+    {
+        if (_running)
+        {
+            return;
+        }
+
+        if (!int.TryParse((_iterationsBox.Text ?? string.Empty).Trim(), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out int iterations) || iterations < 0)
+        {
+            UpdateStatus("Ошибка: число итераций должно быть целым неотрицательным числом.");
+            return;
+        }
+
+        if (!TryParseDouble(_deltaTimeBox.Text, out double deltaTime) || deltaTime <= 0.0)
+        {
+            UpdateStatus("Ошибка: шаг по времени должен быть положительным дробным числом (например 0,5 или 0.5).");
+            return;
+        }
+
+        if (!TryParseDouble(_courantBox.Text, out double courant) || courant <= 0.0)
+        {
+            UpdateStatus("Ошибка: число Куранта должно быть положительным числом (например 0,15).");
+            return;
+        }
+
+        if (!int.TryParse((_updatePeriodBox.Text ?? string.Empty).Trim(), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out int updatePeriod) || updatePeriod < 1)
+        {
+            UpdateStatus("Ошибка: интерфейс должен обновляться не реже, чем раз в 1 итерацию "
+                + "(введите целое число 1, 2, 5 ...).");
+            return;
+        }
+
+        _running = true;
+        _startButton.IsEnabled = false;
+        _stopButton.IsEnabled = true;
+        _resetButton.IsEnabled = false;
+        _chart.Clear();
+        _lastCourant = courant;
+
+        const double stableCourant = 1.0 / 6.0;
+        string warning = courant > stableCourant
+            ? "  Внимание: C > 1/6 — явная схема может оказаться неустойчивой."
+            : string.Empty;
+        double diffusivity = courant * _mesh.CellSize * _mesh.CellSize / deltaTime;
+
+        UpdateStatus($"Расчёт: {iterations} итераций, dt = {deltaTime:0.####} с, C = {courant:0.####}, "
+            + $"a = {diffusivity:0.###E+0} м^2/с, h = {_mesh.CellSize * 1000:0.###} мм, "
+            + $"обновление интерфейса каждые {updatePeriod} итер.{warning}");
+
+        try
+        {
+            await Task.Run(() => _mesh.StartCalc(iterations, deltaTime, courant, OnMeshUpdated, updatePeriod));
+
+            string prefix = _mesh.WasStopped
+                ? $"Расчёт остановлен пользователем: {_mesh.Iteration} итераций, t = {_mesh.Time:0.###} с, "
+                : $"Расчёт завершён: {_mesh.Iteration} итераций, t = {_mesh.Time:0.###} с, ";
+
+            UpdateStatus(prefix + $"a = {_mesh.ThermalDiffusivity:0.###E+0} м^2/с.{warning}");
+        }
+        catch (Exception ex)
+        {
+            UpdateStatus("Ошибка расчёта: " + ex.Message);
+        }
+        finally
+        {
+            _running = false;
+            _startButton.IsEnabled = true;
+            _stopButton.IsEnabled = false;
+            _resetButton.IsEnabled = true;
+        }
+    }
+
+    /// <summary>Остановка расчёта по кнопке «Остановить» (флаг проверяется в цикле Mesh.StartCalc).</summary>
+    private void RequestStop()
+    {
+        if (!_running)
+        {
+            return;
+        }
+
+        _mesh.StopCalc();
+        _stopButton.IsEnabled = false;
+        UpdateStatus("Останавливаем расчёт: завершаем текущую итерацию...");
+    }
+
+    /// <summary>
+    /// Обработчик, который вызывает Mesh.StartCalc на потоке расчёта.
+    /// Здесь делается согласованный снимок температур и передаётся в UI-поток.
+    /// </summary>
+    private void OnMeshUpdated(Mesh mesh, int iteration, double time, double sumAbsDeltaT)
+    {
+        double[,,] snapshot = mesh.TempSnapshot();
+
+        Dispatcher.UIThread.Post(() => ApplyUpdate(snapshot, iteration, time, sumAbsDeltaT));
+    }
+
+    /// <summary>Обновление изображения среза, графика и строки состояния (UI-поток).</summary>
+    private void ApplyUpdate(double[,,] snapshot, int iteration, double time, double sumAbsDeltaT)
+    {
+        if (_closed)
+        {
+            return;
+        }
+
+        _temps = snapshot;
+
+        (double min, double max) = FindRange(snapshot);
+        if (min < _colorMin) _colorMin = min;
+        if (max > _colorMax) _colorMax = max;
+
+        _chart.AddPoint(iteration, time, sumAbsDeltaT);
+        UpdateSliceView();
+
+        // Пока расчёт идёт, в строке состояния показываем прогресс.
+        // После завершения (когда _running == false) сообщение «Расчёт завершён» не затирается
+        // отложенными обновлениями.
+        if (_running)
+        {
+            UpdateStatus($"Итерация {iteration}: t = {time:0.###} с, Σ|ΔT| = {FormatSigma(sumAbsDeltaT)} К, "
+                + $"{FormatTempRange(min, max)}, C = {_lastCourant:0.####}.");
+        }
+    }
+
+    /// <summary>Возврат к начальным условиям (кнопка «Сброс»).</summary>
+    private void ResetSimulation()
+    {
+        if (_running)
+        {
+            return;
+        }
+
+        _mesh.InitCond(_initialTemps);
+        _temps = _mesh.TempSnapshot();
+
+        (_colorMin, _colorMax) = FindRange(_temps);
+        if (_colorMax - _colorMin < 1e-9)
+        {
+            _colorMax = _colorMin + 1.0;
+        }
+
+        _chart.Clear();
+        UpdateSliceView();
+        UpdateStatus($"Начальные условия восстановлены: {FormatTempRange(_colorMin, _colorMax)}.");
+    }
+
+    private void UpdateStatus(string text)
+    {
+        if (_closed)
+        {
+            return;
+        }
+        _statusText.Text = text;
+    }
+
+    // ---------- Форматирование чисел для вывода ----------
+
+    /// <summary>
+    /// Температура с числом знаков после запятой, подобранным по ширине диапазона:
+    /// значение выводится целиком, без обрезки и без «...».
+    /// </summary>
+    private static string FormatTemperature(double value, double range)
+    {
+        double abs = Math.Abs(value);
+        if (abs >= 1e5 || (abs > 0.0 && abs < 1e-3))
+        {
+            return value.ToString("0.###E+0", CultureInfo.CurrentCulture);
+        }
+
+        int decimals = range switch
+        {
+            >= 1000.0 => 0,
+            >= 100.0 => 1,
+            >= 10.0 => 2,
+            >= 1.0 => 3,
+            >= 0.1 => 4,
+            _ => 5
+        };
+
+        return value.ToString("F" + decimals.ToString(CultureInfo.CurrentCulture), CultureInfo.CurrentCulture);
+    }
+
+    /// <summary>Диапазон температур в виде «T от A до B К» с согласованным округлением концов.</summary>
+    private static string FormatTempRange(double min, double max)
+    {
+        double range = Math.Max(0.0, max - min);
+        return $"T от {FormatTemperature(min, range)} до {FormatTemperature(max, range)} К";
+    }
+
+    /// <summary>Сумма |ΔT|: чем больше величина, тем меньше знаков после запятой.</summary>
+    private static string FormatSigma(double value)
+    {
+        double abs = Math.Abs(value);
+        if (abs >= 1e5 || (abs > 0.0 && abs < 1e-3))
+        {
+            return value.ToString("0.###E+0", CultureInfo.CurrentCulture);
+        }
+        if (abs >= 100.0)
+        {
+            return value.ToString("0", CultureInfo.CurrentCulture);
+        }
+        if (abs >= 1.0)
+        {
+            return value.ToString("0.##", CultureInfo.CurrentCulture);
+        }
+        return value.ToString("0.####", CultureInfo.CurrentCulture);
+    }
+
+    private static bool TryParseDouble(string? text, out double value)
+    {
+        value = 0.0;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        string normalized = text.Trim().Replace(',', '.');
+        return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static (double Min, double Max) FindRange(double[,,] values)
+    {
+        double min = double.MaxValue;
+        double max = double.MinValue;
+
+        foreach (double value in values)
+        {
+            if (double.IsNaN(value))
+            {
+                continue;
+            }
+            if (value < min) min = value;
+            if (value > max) max = value;
+        }
+
+        if (min > max)
+        {
+            return (0.0, 1.0);
+        }
+        return (min, max);
     }
 
     private static (byte B, byte G, byte R) TemperatureToRgb(double temp, double minTemp, double maxTemp)
     {
-        double t = Math.Clamp((temp - minTemp) / (maxTemp - minTemp), 0.0, 1.0);
+        double range = maxTemp - minTemp;
+        double t = range <= 0 ? 0.0 : Math.Clamp((temp - minTemp) / range, 0.0, 1.0);
 
         byte r, g, b;
         if (t < 0.25)
@@ -219,10 +629,229 @@ public class MainWindow : Window
     }
 }
 
+/// <summary>
+/// График суммы модулей изменений температуры в ячейках:
+/// по оси X — номер итерации (и соответствующее время), по оси Y — сумма |dT| по всем ячейкам.
+/// </summary>
+public sealed class SumDeltaChart : Control
+{
+    private readonly List<(int Iteration, double Time, double SumAbs)> _points = new();
+
+    // Тёмное оформление графика: чёрный фон, белые подписи, яркая кривая
+    private static readonly IBrush BackBrush = new SolidColorBrush(Colors.Black);
+    private static readonly IBrush PlotBrush = new SolidColorBrush(Colors.Black);
+    private static readonly IBrush TextBrush = Brushes.White;
+    private static readonly IBrush CurveBrush = new SolidColorBrush(Color.Parse("#FFFF8A00"));
+    private static readonly IPen AxisPen = new Pen(new SolidColorBrush(Color.Parse("#FFBDBDBD")), 1.2);
+    private static readonly IPen GridPen = new Pen(new SolidColorBrush(Color.Parse("#FF303030")), 1.0);
+    private static readonly IPen CurvePen = new Pen(CurveBrush, 2.0);
+
+    public SumDeltaChart()
+    {
+        MinHeight = 140;
+    }
+
+    /// <summary>Добавить точку графика (вызывается из UI-потока).</summary>
+    public void AddPoint(int iteration, double time, double sumAbsDeltaT)
+    {
+        _points.Add((iteration, time, sumAbsDeltaT));
+        InvalidateVisual();
+    }
+
+    /// <summary>Очистить график.</summary>
+    public void Clear()
+    {
+        _points.Clear();
+        InvalidateVisual();
+    }
+
+    /// <summary>Число точек на графике (используется автотестом).</summary>
+    public int PointCount => _points.Count;
+
+    /// <summary>Значение Σ|ΔT| в последней точке (используется автотестом).</summary>
+    public double LastValue => _points.Count > 0 ? _points[^1].SumAbs : 0.0;
+
+    /// <summary>Номер итерации в последней точке (используется автотестом).</summary>
+    public int LastIteration => _points.Count > 0 ? _points[^1].Iteration : -1;
+
+    /// <summary>Значение Σ|ΔT| в точке с индексом index (используется автотестом).</summary>
+    public double ValueAt(int index) => index >= 0 && index < _points.Count ? _points[index].SumAbs : double.NaN;
+
+    public override void Render(DrawingContext context)
+    {
+        double w = Bounds.Width;
+        double h = Bounds.Height;
+        if (w < 80 || h < 80)
+        {
+            return;
+        }
+
+        context.FillRectangle(BackBrush, new Rect(0, 0, w, h), 1f);
+
+        const double left = 92, right = 18, top = 22, bottom = 62;
+        double plotWidth = w - left - right;
+        double plotHeight = h - top - bottom;
+        if (plotWidth < 20 || plotHeight < 20)
+        {
+            return;
+        }
+
+        var plot = new Rect(left, top, plotWidth, plotHeight);
+        context.FillRectangle(PlotBrush, plot, 1f);
+
+        double maxIteration = _points.Count > 0 ? Math.Max(1, _points[^1].Iteration) : 1;
+        double maxTime = _points.Count > 0 ? _points[^1].Time : 0.0;
+
+        double maxSum = 0.0;
+        foreach (var point in _points)
+        {
+            maxSum = Math.Max(maxSum, point.SumAbs);
+        }
+        if (!(maxSum > 0.0) || double.IsNaN(maxSum) || double.IsInfinity(maxSum))
+        {
+            maxSum = 1.0;
+        }
+
+        const int ticks = 5;
+
+        // Сетка и подписи по оси Y (сумма модулей изменений температуры)
+        for (int i = 0; i <= ticks; i++)
+        {
+            double frac = (double)i / ticks;
+            double y = plot.Bottom - frac * plotHeight;
+            context.DrawLine(GridPen, new Point(plot.X, y), new Point(plot.Right, y));
+            DrawTextRightMiddle(context, FormatNumber(maxSum * frac), new Point(plot.X - 6, y));
+        }
+
+        // Сетка и подписи по оси X (номер итерации и общее время)
+        int lastIterationLabel = -1;
+        for (int i = 0; i <= ticks; i++)
+        {
+            double frac = (double)i / ticks;
+            double x = plot.X + frac * plotWidth;
+            context.DrawLine(GridPen, new Point(x, plot.Y), new Point(x, plot.Bottom));
+
+            if (_points.Count == 0)
+            {
+                continue;
+            }
+
+            int iterationLabel = (int)Math.Round(maxIteration * frac);
+            if (iterationLabel != lastIterationLabel)
+            {
+                lastIterationLabel = iterationLabel;
+                DrawTextCenterTop(context, iterationLabel.ToString(CultureInfo.CurrentCulture),
+                    new Point(x, plot.Bottom + 4));
+            }
+
+            if (maxTime > 0.0)
+            {
+                DrawTextCenterTop(context, FormatNumber(maxTime * frac) + " с", new Point(x, plot.Bottom + 20));
+            }
+        }
+
+        // Оси
+        context.DrawLine(AxisPen, new Point(plot.X, plot.Bottom), new Point(plot.X, plot.Y));
+        context.DrawLine(AxisPen, new Point(plot.X, plot.Bottom), new Point(plot.Right, plot.Bottom));
+
+        // Кривая
+        if (_points.Count >= 2)
+        {
+            var geometry = new StreamGeometry();
+            using (StreamGeometryContext gc = geometry.Open())
+            {
+                gc.BeginFigure(ToPoint(_points[0], plot, maxIteration, maxSum), false);
+                for (int i = 1; i < _points.Count; i++)
+                {
+                    gc.LineTo(ToPoint(_points[i], plot, maxIteration, maxSum), true);
+                }
+                gc.EndFigure(false);
+            }
+            context.DrawGeometry(null, CurvePen, geometry);
+        }
+        else if (_points.Count == 1)
+        {
+            context.DrawEllipse(CurveBrush, null, ToPoint(_points[0], plot, maxIteration, maxSum), 2.5, 2.5);
+        }
+
+        // Подписи осей и текущее значение
+        DrawTextLeftTop(context, "Σ|ΔT|, К", new Point(6, 4));
+        DrawTextLeftTop(context, "номер итерации (снизу — время)", new Point(plot.X + 2, plot.Bottom + 38));
+
+        if (_points.Count > 0)
+        {
+            var last = _points[^1];
+            DrawTextRightTop(context,
+                $"итерация {last.Iteration}, t = {last.Time:0.###} с, Σ|ΔT| = {FormatNumber(last.SumAbs)} К",
+                new Point(plot.Right, 3));
+        }
+        else
+        {
+            FormattedText hint = CreateText("нет данных — нажмите «Старт расчёта»");
+            context.DrawText(hint, new Point(
+                plot.X + (plot.Width - hint.Width) / 2.0,
+                plot.Y + (plot.Height - hint.Height) / 2.0));
+        }
+    }
+
+    private static Point ToPoint((int Iteration, double Time, double SumAbs) point,
+        Rect plot, double maxIteration, double maxSum)
+    {
+        double x = plot.X + point.Iteration / maxIteration * plot.Width;
+        double y = plot.Bottom - Math.Clamp(point.SumAbs / maxSum, 0.0, 1.0) * plot.Height;
+        return new Point(x, y);
+    }
+
+    private static FormattedText CreateText(string text)
+    {
+        return new FormattedText(text, CultureInfo.CurrentCulture, FlowDirection.LeftToRight,
+            new Typeface("Segoe UI"), 11.0, TextBrush);
+    }
+
+    private static void DrawTextLeftTop(DrawingContext context, string text, Point anchor)
+    {
+        context.DrawText(CreateText(text), anchor);
+    }
+
+    private static void DrawTextRightTop(DrawingContext context, string text, Point anchor)
+    {
+        FormattedText ft = CreateText(text);
+        context.DrawText(ft, new Point(anchor.X - ft.Width, anchor.Y));
+    }
+
+    private static void DrawTextRightMiddle(DrawingContext context, string text, Point anchor)
+    {
+        FormattedText ft = CreateText(text);
+        context.DrawText(ft, new Point(anchor.X - ft.Width, anchor.Y - ft.Height / 2.0));
+    }
+
+    private static void DrawTextCenterTop(DrawingContext context, string text, Point anchor)
+    {
+        FormattedText ft = CreateText(text);
+        context.DrawText(ft, new Point(anchor.X - ft.Width / 2.0, anchor.Y));
+    }
+
+    private static string FormatNumber(double value)
+    {
+        double abs = Math.Abs(value);
+        if (abs >= 1e5 || (abs > 0.0 && abs < 0.001))
+        {
+            return value.ToString("0.0E+0", CultureInfo.CurrentCulture);
+        }
+        if (abs >= 100.0)
+        {
+            return value.ToString("0", CultureInfo.CurrentCulture);
+        }
+        return value.ToString("0.###", CultureInfo.CurrentCulture);
+    }
+}
+
 public class App : Application
 {
     public override void Initialize()
     {
+        // Тёмное оформление всего приложения: чёрный фон, белые подписи и элементы
+        RequestedThemeVariant = ThemeVariant.Dark;
         Styles.Add(new FluentTheme());
     }
 }
