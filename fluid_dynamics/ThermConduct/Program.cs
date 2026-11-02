@@ -29,26 +29,55 @@ class Program
 }
 
 /// <summary>
-/// Начальные условия тестового запуска: сетка и граничные условия.
+/// Начальные и граничные условия тестового запуска: сетка и массивы температур.
 /// </summary>
 public static class TestRun
 {
+    /// <summary>Число ячеек по каждой оси куба.</summary>
+    private const int N = 100;
+
     /// <summary>
     /// Сетка 32x32x32 (h = 0.001 м между центрами ячеек) с горячим пятном в центре:
     /// грань x = min — постоянный источник 100 К, остальные грани — 0 К.
+    /// Начальные и граничные условия передаются при создании сетки массивами температур.
     /// </summary>
     public static Mesh CreateTestMesh()
     {
-        Mesh mesh = new(32, 32, 32);
-        mesh.TestTempDistr();          // начальное условие: горячее пятно в центре (0..100 К)
-        mesh.BoundaryCond(
-            xPast: _ => 100.0,         // грань x = min — нагреваемая стенка
-            xNext: _ => 0.0,           // грань x = max — холодная стенка
-            yPast: _ => 0.0,
-            yNext: _ => 0.0,
-            zPast: _ => 0.0,
-            zNext: _ => 0.0);
+        // Начальное условие: горячее пятно в центре (0..100 К)
+        double[,,] temps = new double[N, N, N];
+        double center = N / 2.0;
+        for (int x = 0; x < N; x++)
+        {
+            for (int y = 0; y < N; y++)
+            {
+                for (int z = 0; z < N; z++)
+                {
+                    double rad = Math.Sqrt(Math.Pow(x - center, 2) + Math.Pow(y - center, 2) + Math.Pow(z - center, 2));
+                    temps[x, y, z] = Math.Max(0.0, 100.0 - rad * 3.5);
+                }
+            }
+        }
 
-        return mesh;
+        double[,] cold = Plane(N, N, 0.0);     // остальные грани — 0 К
+        double[,] hot = Plane(N, N, 100.0);    // грань x = min — нагреваемая стенка
+
+        return new Mesh(temps,
+            xPast: hot, xNext: cold,
+            yPast: cold, yNext: cold,
+            zPast: cold, zNext: cold);
+    }
+
+    /// <summary>Плоскость грани куба, заполненная одной температурой.</summary>
+    private static double[,] Plane(int d0, int d1, double value)
+    {
+        double[,] plane = new double[d0, d1];
+        for (int i = 0; i < d0; i++)
+        {
+            for (int j = 0; j < d1; j++)
+            {
+                plane[i, j] = value;
+            }
+        }
+        return plane;
     }
 }

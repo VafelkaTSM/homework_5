@@ -484,7 +484,7 @@ public class MainWindow : Window
             return;
         }
 
-        _mesh.InitCond(_initialTemps);
+        _mesh.SetTemps(_initialTemps);
         _temps = _mesh.TempSnapshot();
 
         (_colorMin, _colorMax) = FindRange(_temps);
