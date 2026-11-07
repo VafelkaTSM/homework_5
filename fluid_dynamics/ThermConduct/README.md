@@ -4,12 +4,13 @@
 ячеек и визуализация результата в окне AvaloniaUI — срез куба по выбранной оси и график
 суммы модулей изменений температуры `Σ|ΔT|` по итерациям.
 
-Вся расчётная часть (**все** физические величины, начальные и граничные условия) задаётся
-простыми многомерными массивами `double`:
+Расчётное ядро работает с простыми многомерными массивами `double`, а условия эксперимента
+задаются в двух JSON-файлах (загрузчик — `MeshConditions.cs`):
 
-* начальные условия — `double[X, Y, Z]` (своя температура у каждой ячейки);
-* граничные условия — по одному массиву `double[,]` на каждую из шести граней куба
-  (своё значение для каждой ячейки грани), **только числа, не функции времени**.
+* начальные условия — `initial_conditions.json`: `double[X, Y, Z]` (своя температура у каждой
+  ячейки) либо одно число — **равномерное поле** (вариант по умолчанию);
+* граничные условия — `boundary_conditions.json`: по одному массиву `double[,]` на каждую из
+  шести граней куба (или одно число на всю грань), **только числа, не функции времени**.
 
 ---
 
@@ -113,6 +114,8 @@ dotnet run
 ```
 
 В репозиторий не попадают каталоги `obj/` и `bin/` (см. `.gitignore`).
+Условия эксперимента задаются в `initial_conditions.json` и `boundary_conditions.json`
+(они копируются рядом с исполняемым файлом при сборке, см. `ThermConduct.csproj`).
 
 ---
 
@@ -120,13 +123,17 @@ dotnet run
 
 | Файл | Строк | Назначение |
 |---|---:|---|
-| `Program.cs` | 83 | точка входа, настройка Avalonia, `TestRun` — начальные и граничные условия демонстрационного запуска |
-| `ThermConductSim.cs` | 569 | расчётное ядро: `Cell`, `Face`, `Mesh`, `CalcUpdateHandler` (namespace `ThermConductSim`) |
-| `ThermSliceViewer.cs` | 857 | интерфейс: `MainWindow`, `SumDeltaChart`, `App` (namespace `ThermSliceViewer`) |
-| `ThermConduct.csproj` | — | целевая платформа, ссылки на Avalonia |
+| `Program.cs` | 97 | точка входа: условия из JSON → объект сетки → окно → запуск расчёта с делегатом в интерфейс |
+| `MeshConditions.cs` | 400 | чтение `initial_conditions.json` и `boundary_conditions.json`, `CreateMesh()` (namespace `Program`) |
+| `ThermConductSim.cs` | 572 | расчётное ядро: `Cell`, `Face`, `Mesh`, `CalcUpdateHandler` (namespace `ThermConductSim`) |
+| `ThermSliceViewer.cs` | 956 | только интерфейс: `MainWindow`, `SumDeltaChart`, `App`, `CalcSettings` (namespace `ThermSliceViewer`) |
+| `initial_conditions.json` | 21 | начальные условия: `shape`, `cellSize`, `temperature` (равномерное поле) или `cells` |
+| `boundary_conditions.json` | 16 | граничные условия шести граней: число или двумерный массив |
+| `ThermConduct.csproj` | — | целевая платформа, ссылки на Avalonia, копирование JSON в каталог сборки |
 
 Зависимость односторонняя: `Program` → {`ThermConductSim`, `ThermSliceViewer`},
-`ThermConductSim` ничего не знает про UI (связь только через делегат `CalcUpdateHandler`).
+`ThermConductSim` ничего не знает про UI (связь только через делегат `CalcUpdateHandler`),
+`ThermSliceViewer` ничего не знает про `Mesh` — общается только событиями и методами `Show…`.
 
 ---
 
@@ -337,10 +344,9 @@ public Mesh(double[,,] initTemp,
 3. вызов `updateHandler(this, 0, 0, 0)` — «нулевая» итерация для отрисовки исходного поля;
 4. цикл `iter = 1…numberIter`:
    1. если пришёл `StopCalc()` — выставить `WasStopped` и выйти из цикла;
-   2. `Time = iter · Δt`;
-   3. `UpdateFaces()` — вторые производные по текущим (старым) температурам;
-   4. `UpdateCells(C)` — сдвиг всех температур на один шаг, `Σ|ΔT|`;
-   5. `Iteration = iter`;
+   2. `UpdateFaces()` — вторые производные по текущим (старым) температурам;
+   3. `UpdateCells(C)` — сдвиг всех температур на один шаг, `Σ|ΔT|`;
+   4. `Time = iter · Δt`, `Iteration = iter`;
    6. если `iter % updatePeriod == 0` или это последняя итерация — вызвать `updateHandler`.
 
 Порядок «сначала все грани, потом все ячейки» важен: температуры ячеек читаются только в
@@ -412,10 +418,11 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 
 ### 6.1 `MainWindow : Window`
 
-Создаётся с уже готовой сеткой: `new MainWindow(Mesh mesh)`. Окно ничего не знает о
-внутреннем устройстве `Mesh` — работает только через `Shape()`, `CellSize`,
-`TempSnapshot()`, `SetTemps()`, `StartCalc()`, `StopCalc()`, `WasStopped`, `Iteration`,
-`Time`, `ThermalDiffusivity`.
+Окно — только интерфейс: создаётся по начальному полю температур и шагу сетки
+(`new MainWindow(double[,,] initialTemps, double cellSize)`), о расчётном ядре ничего не
+знает и само ничего не считает. О нажатиях кнопок оно сообщает событиями `StartRequested`
+(с проверенными параметрами `CalcSettings`), `StopRequested`, `ResetRequested`, а данные
+расчёта принимает методами `ShowFrame`, `ShowReset`, `ShowFinished`, `ShowError`.
 
 **Что на экране** (сверху вниз, `Grid` со строками `Auto, *, Auto`):
 
@@ -432,28 +439,32 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 
 | Поле | Назначение |
 |---|---|
-| `_mesh` | расчётное ядро |
-| `_nx, _ny, _nz` | размеры сетки из `Shape()` |
+| `_nx, _ny, _nz` | размеры сетки — из формы начального поля температур |
+| `_cellSize` | шаг сетки `h`, м — для подписей и вычисления `a = C·h²/Δt` |
 | `_temps` | текущий снимок температур `[X, Y, Z]`, по нему рисуется срез |
-| `_initialTemps` | копия снимка при запуске — для кнопки «Сброс» |
 | `_colorMin, _colorMax` | диапазон палитры; при росте/падении температуры только расширяется (цвета не «прыгают») |
 | `_axisComboBox, _sliceSlider, _sliceInfoText, _sliceImageView` | элементы панели срезов |
 | `_iterationsBox, _deltaTimeBox, _courantBox, _updatePeriodBox` | поля ввода параметров (по умолчанию `200`, `1,0`, `0,15`, `1`) |
 | `_startButton, _stopButton, _resetButton, _statusText, _chart` | кнопки, строка состояния, график |
-| `_running`, `_closed`, `_lastCourant` | идёт ли расчёт / закрыто ли окно / последнее `C` для строки состояния |
+| `_running`, `_closed`, `_lastCourant`, `_warning` | идёт ли расчёт / закрыто ли окно / последнее `C` / предупреждение о неустойчивости схемы |
 
 **Методы**
 
 | Метод | Что делает |
 |---|---|
-| `MainWindow(Mesh mesh)` | читает снимок и диапазон температур, строит все элементы, подписывается на события, рисует первый кадр и печатает «Исходное состояние…» |
+| `MainWindow(double[,,] initialTemps, double cellSize)` | берёт размеры сетки и диапазон температур из начального поля, строит все элементы, подписывается на клики, рисует первый кадр и печатает «Исходное состояние…» |
 | `OnAxisChanged()` | при смене нормали переставляет `Slider.Maximum` на `N-1` нужной оси и перерисовывает срез |
 | `UpdateSliceView()` | берёт срез `_temps` по выбранной оси и индексу, считает `min/max` среза, заливает `WriteableBitmap` (`Bgra8888`, ось Y развёрнута снизу вверх), присваивает `Image.Source` |
-| `StartSimulation()` | `async void`: проверяет ввод, блокирует кнопки, очищает график, печатает параметры и `a`, запускает `Task.Run(() => _mesh.StartCalc(...))`, по завершении показывает «Расчёт завершён» / «Расчёт остановлен пользователем» |
-| `RequestStop()` | `_mesh.StopCalc()` — расчёт завершит текущую итерацию и выйдет |
-| `OnMeshUpdated(mesh, iteration, time, sumAbsDeltaT)` | вызывается **из потока расчёта**: делает `TempSnapshot()` и через `Dispatcher.UIThread.Post` отправляет снимок в UI |
-| `ApplyUpdate(snapshot, iteration, time, sumAbsDeltaT)` | выполняется в UI-потоке: обновляет `_temps`, расширяет диапазон палитры, добавляет точку на график, перерисовывает срез и строку состояния |
-| `ResetSimulation()` | `_mesh.SetTemps(_initialTemps)`, пересчёт диапазона, `_chart.Clear()`, перерисовка (кнопка «Сброс») |
+| `TryReadSettings(out CalcSettings)` | проверяет поля ввода; при ошибке пишет её в строку состояния и возвращает `false` |
+| `OnStartClicked()` | проверяет ввод, блокирует кнопки, очищает график, печатает параметры и `a`, поднимает событие `StartRequested` (сам расчёт не запускает) |
+| `OnStopClicked()` | блокирует кнопку «Остановить» и поднимает `StopRequested` (подписчик вызывает `Mesh.StopCalc()`) |
+| `OnResetClicked()` | поднимает `ResetRequested` (подписчик возвращает начальные температуры и вызывает `ShowReset`) |
+| `ShowFrame(snapshot, iteration, time, sumAbsDeltaT)` | вызывается в UI-потоке: проверяет размерность снимка, обновляет `_temps`, расширяет диапазон палитры, добавляет точку на график, перерисовывает срез и строку состояния |
+| `ShowReset(temps)` | новое поле температур, сброс диапазона палитры, `_chart.Clear()`, перерисовка среза, сообщение «Начальные условия восстановлены» |
+| `ShowFinished(stopped, iteration, time, thermalDiffusivity)` | разблокирует кнопки и печатает «Расчёт завершён» / «Расчёт остановлен пользователем» |
+| `ShowError(message)` | разблокирует кнопки и печатает «Ошибка расчёта: …» |
+| `SetRunning(bool)` | переключает состояние трёх кнопок и признак `_running` |
+| `CheckSnapshotShape(temps)` | `ArgumentException`, если снимок не совпадает по размерам с сеткой окна |
 | `UpdateStatus(text)` | запись в строку состояния (ничего не делает, если окно закрыто) |
 | `MakeLabel`, `MakeInputBox` | создание подписи и поля ввода (ширина, подсказка-tooltip, тёмный фон) |
 | `FormatTemperature`, `FormatTempRange`, `FormatSigma` | форматирование чисел: число знаков после запятой подбирается по ширине диапазона, чтобы значение не обрезалось |
@@ -461,9 +472,11 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 | `FindRange(double[,,])` | `min/max` по всем ячейкам, `NaN` игнорируется |
 | `TemperatureToRgb(temp, min, max)` | палитра: синий → голубой → зелёный → жёлтый → красный, возвращает `(B, G, R)` |
 
-**Многопоточность.** Расчёт идёт в `Task.Run`; `Mesh.StartCalc` вызывает `OnMeshUpdated`
-на потоке расчёта, поэтому снимок `TempSnapshot()` делается там же, а вся работа с
-визуальными элементами — только в `ApplyUpdate` на UI-потоке через `Dispatcher.UIThread.Post`.
+**Многопоточность.** Расчёт запускает `Program.cs` в `Task.Run`; делегат `CalcUpdateHandler`
+вызывается на потоке расчёта, поэтому снимок `TempSnapshot()` делается там же
+(`Program.OnMeshUpdated`), а вся работа с визуальными элементами — только в `ShowFrame`
+на UI-потоке через `Dispatcher.UIThread.Post`. После `ShowFinished` (`_running == false`)
+отложенные кадры больше не затирают итоговое сообщение в строке состояния.
 
 ### 6.2 `SumDeltaChart : Control`
 
@@ -487,27 +500,52 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 
 ---
 
-## 7. `Program.cs` и `TestRun`
+## 7. `Program.cs` — начальные условия, объект расчёта и интерфейса
+
+`Main` состоит из трёх шагов: условия из JSON, объект сетки, запуск Avalonia.
 
 ```csharp
-public static void Main(string[] args) => BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+MeshConditions conditions = MeshConditions.Load("initial_conditions.json", "boundary_conditions.json");
+Mesh mesh = conditions.CreateMesh();
+BuildAvaloniaApp(conditions, mesh).StartWithClassicDesktopLifetime(args);
 ```
 
-`BuildAvaloniaApp()` настраивает Avalonia и в `AfterSetup` подставляет главное окно:
-`desktop.MainWindow = new MainWindow(TestRun.CreateTestMesh())`.
+В `AfterSetup` создаётся объект интерфейса `new MainWindow(conditions.Initial, mesh.CellSize)`
+и события окна связываются с расчётным ядром:
 
-`TestRun.CreateTestMesh()` — демонстрационные условия:
+| Событие окна | Что делает `Program.cs` |
+|---|---|
+| `StartRequested(settings)` | `Task.Run(() => mesh.StartCalc(...))` с делегатом `OnMeshUpdated` и параметрами `CalcSettings` |
+| `StopRequested` | `mesh.StopCalc()` |
+| `ResetRequested` | `mesh.SetTemps(conditions.Initial)`, затем `window.ShowReset(mesh.TempSnapshot())` |
 
-* сетка `32 × 32 × 32`, `h = 0.001` м (значение по умолчанию);
-* начальное условие — горячее пятно в центре: `T = max(0, 100 − 3.5·r)`, где `r` — расстояние
-  от центра куба в ячейках (значения 0…100 К);
-* грань `x = min` — нагреваемая стенка `100` К (`xPast`);
-* остальные пять граней — `0` К;
-* `Plane(d0, d1, value)` — вспомогательный метод, создающий плоскость ГУ нужного размера,
-  заполненную одной температурой.
+Делегат `OnMeshUpdated(window, mesh, iteration, time, sumAbsDeltaT)` (тип `CalcUpdateHandler`)
+вызывается на потоке расчёта: делает `mesh.TempSnapshot()` и через `Dispatcher.UIThread.Post`
+передаёт снимок в `window.ShowFrame(...)`. После завершения `Task.Run` вызывается
+`window.ShowFinished(...)`, при исключении — `window.ShowError(...)`.
 
-Чтобы сменить условия эксперимента, достаточно поправить только этот метод — расчётное
-ядро и интерфейс менять не нужно.
+### 7.1 Формат файлов условий
+
+`initial_conditions.json` (читает `MeshConditions.Load`):
+
+| Поле | Смысл |
+|---|---|
+| `shape` | `[X, Y, Z]` — размеры сетки в ячейках |
+| `cellSize` | шаг сетки `h`, м (по умолчанию `Mesh.DefaultCellSize = 0.001`) |
+| `temperature` | одно число — **равномерное** начальное поле, К (по умолчанию `300`) |
+| `cells` | необязательный массив `[X][Y][Z]`: своя температура у каждой ячейки (заменяет `temperature`) |
+
+`boundary_conditions.json`: поля `xPast`, `xNext`, `yPast`, `yNext`, `zPast`, `zNext` — каждое
+либо число (равномерная температура всей грани, К), либо двумерный массив нужной формы
+(x — `[Y][Z]`, y — `[X][Z]`, z — `[X][Y]`). Пропущенное поле — `300` К. В обоих файлах
+разрешены комментарии `//`, `/* */` и висячие запятые; размеры всех массивов сверяются
+с `shape`, ошибки сообщаются с именем файла и поля.
+
+Демонстрационные значения: сетка `32 × 32 × 32`, `h = 0.001` м, начальное поле равномерное
+`300` К, грань `x = min` — нагреваемая стенка `400` К, остальные пять граней — `300` К.
+
+Чтобы сменить условия эксперимента, достаточно поправить JSON-файлы — расчётное ядро и
+интерфейс менять не нужно.
 
 ---
 
@@ -531,7 +569,8 @@ public static void Main(string[] args) => BuildAvaloniaApp().StartWithClassicDes
    большего варианта с массивом `Face[6]` у каждой ячейки.
 6. **Один расчёт за раз**: `StartCalc` синхронный и занимает вызвавший его поток,
    поэтому в UI он запускается через `Task.Run`.
-7. **Нет сохранения/загрузки** условий и результатов в файл — всё задаётся в коде.
+7. **Условия читаются из JSON** (`initial_conditions.json`, `boundary_conditions.json`);
+   результаты расчёта (срезы, график) не сохраняются — только показываются в окне.
 
 ## 9. Возможные направления развития
 
@@ -540,5 +579,5 @@ public static void Main(string[] args) => BuildAvaloniaApp().StartWithClassicDes
 * зависящие от времени ГУ: заменить `BoundaryTemp` на функцию `Func<double, double>`;
 * аппроксимация внешней грани второго порядка точности;
 * неявная схема или автоматический подбор `Δt` из условия устойчивости;
-* загрузка начальных условий и ГУ из файла/таблицы, экспорт срезов в PNG/CSV;
+* экспорт срезов в PNG/CSV и сохранение истории `Σ|ΔT|`;
 * распараллеливание `UpdateFaces`/`UpdateCells` (`Parallel.For`) — сейчас всё однопоточное.

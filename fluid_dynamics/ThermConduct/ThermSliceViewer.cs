@@ -8,21 +8,35 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Styling;
 using Avalonia.Themes.Fluent;
-using Avalonia.Threading;
-using ThermConductSim;
-
 namespace ThermSliceViewer;
 
+/// <summary>
+/// Параметры расчёта, введённые пользователем. Окно только читает и проверяет их,
+/// а сам расчёт запускает вызывающий код (Program.cs), подписанный на событие
+/// <see cref="MainWindow.StartRequested"/>.
+/// </summary>
+/// <param name="Iterations">Сколько шагов по времени выполнить.</param>
+/// <param name="DeltaTime">Шаг по времени одной итерации, с.</param>
+/// <param name="CourantNumber">Число Куранта C = a·dt/h² (устойчиво при C ≤ 1/6).</param>
+/// <param name="UpdatePeriod">Через сколько итераций обновлять интерфейс.</param>
+public sealed record CalcSettings(int Iterations, double DeltaTime, double CourantNumber, int UpdatePeriod);
+
+/// <summary>
+/// Главное окно — только графический интерфейс: срезы сетки, параметры расчёта, график
+/// и кнопки. Окно ничего не считает и не хранит Mesh: о нажатиях кнопок оно сообщает
+/// событиями StartRequested / StopRequested / ResetRequested, а данные расчёта принимает
+/// методами ShowFrame / ShowReset / ShowFinished / ShowError.
+/// </summary>
 public class MainWindow : Window
 {
-    private readonly Mesh _mesh;
+    // Размеры сетки — берутся из формы начального поля температур
     private readonly int _nx, _ny, _nz;
 
-    // Текущие температуры ячеек (снимок, сделанный на потоке расчёта)
-    private double[,,] _temps;
+    // Шаг сетки h, м: нужен для подписей и для коэффициента температуропроводности a
+    private readonly double _cellSize;
 
-    // Начальные условия первого запуска — для кнопки «Сброс»
-    private readonly double[,,] _initialTemps;
+    // Текущие температуры ячеек — только для отрисовки среза
+    private double[,,] _temps;
 
     // Диапазон температур для цветовой шкалы
     private double _colorMin, _colorMax;
@@ -48,11 +62,31 @@ public class MainWindow : Window
     private static readonly IBrush InputBorderBrush = new SolidColorBrush(Color.Parse("#FF666666"));
     private static readonly IBrush SeparatorBrush = new SolidColorBrush(Color.Parse("#FF444444"));
 
-    private bool _running;
-    private bool _closed;
-    private double _lastCourant = 0.1;
+    private bool _running;                     // идёт ли расчёт (состояние кнопок и строки состояния)
+    private bool _closed;                      // окно закрыто — обновления интерфейса игнорируются
+    private double _lastCourant = 0.1;         // последнее число Куранта — для строки состояния
+    private string _warning = string.Empty;    // предупреждение о неустойчивой схеме
 
-    public MainWindow(Mesh mesh)
+    /// <summary>Граница устойчивости явной 3D-схемы: C ≤ 1/6.</summary>
+    private const double StableCourant = 1.0 / 6.0;
+
+    /// <summary>Пользователь нажал «Старт расчёта»; параметры уже проверены окном.</summary>
+    public event EventHandler<CalcSettings>? StartRequested;
+
+    /// <summary>Пользователь нажал «Остановить».</summary>
+    public event EventHandler? StopRequested;
+
+    /// <summary>Пользователь нажал «Сброс» — нужно вернуть начальные условия.</summary>
+    public event EventHandler? ResetRequested;
+
+    /// <summary>
+    /// Окно создаётся по начальному полю температур (его форма задаёт размеры сетки)
+    /// и шагу сетки. Объект расчёта окну не передаётся: оно только рисует данные,
+    /// которые приходят в методы ShowFrame / ShowReset / ShowFinished / ShowError.
+    /// </summary>
+    /// <param name="initialTemps">Начальные температуры ячеек [X, Y, Z], К.</param>
+    /// <param name="cellSize">Шаг сетки h, м.</param>
+    public MainWindow(double[,,] initialTemps, double cellSize)
     {
         Title = "Теплопередача: срезы сетки и сумма модулей изменений температуры";
         Width = 980;
@@ -60,15 +94,23 @@ public class MainWindow : Window
         Background = WindowBrush;
         RequestedThemeVariant = ThemeVariant.Dark;
 
-        // 1. Инициализация сетки и распределения температуры
-        _mesh = mesh;
-        int[] shape = _mesh.Shape();
-        _nx = shape[0];
-        _ny = shape[1];
-        _nz = shape[2];
+        // 1. Начальное поле температур: его форма задаёт размеры сетки
+        ArgumentNullException.ThrowIfNull(initialTemps);
+        if (cellSize <= 0.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(cellSize), "шаг сетки должен быть > 0");
+        }
 
-        _temps = _mesh.TempSnapshot();
-        _initialTemps = (double[,,])_temps.Clone();
+        _temps = initialTemps;
+        _cellSize = cellSize;
+        _nx = initialTemps.GetLength(0);
+        _ny = initialTemps.GetLength(1);
+        _nz = initialTemps.GetLength(2);
+        if (_nx <= 0 || _ny <= 0 || _nz <= 0)
+        {
+            throw new ArgumentException("начальное поле температур пустое", nameof(initialTemps));
+        }
+
         (_colorMin, _colorMax) = FindRange(_temps);
         if (_colorMax - _colorMin < 1e-9)
         {
@@ -223,18 +265,19 @@ public class MainWindow : Window
 
         Content = rootGrid;
 
-        // 6. Обработчики событий пользовательского ввода
+        // 6. Обработчики пользовательского ввода. Расчёт здесь не запускается: окно только
+        //    меняет своё состояние и сообщает о действии пользователя событиями.
         _axisComboBox.SelectionChanged += (s, e) => OnAxisChanged();
         _sliceSlider.ValueChanged += (s, e) => UpdateSliceView();
-        _startButton.Click += (s, e) => StartSimulation();
-        _stopButton.Click += (s, e) => RequestStop();
-        _resetButton.Click += (s, e) => ResetSimulation();
+        _startButton.Click += (s, e) => OnStartClicked();
+        _stopButton.Click += (s, e) => OnStopClicked();
+        _resetButton.Click += (s, e) => OnResetClicked();
         Closed += (s, e) => _closed = true;
 
         // Отрисовка первого кадра
         UpdateSliceView();
         UpdateStatus($"Исходное состояние: {FormatTempRange(_colorMin, _colorMax)}, "
-            + $"ячеек {_nx}x{_ny}x{_nz}, h = {_mesh.CellSize * 1000:0.###} мм.");
+            + $"ячеек {_nx}x{_ny}x{_nz}, h = {_cellSize * 1000:0.###} мм.");
     }
 
     // ---------- Создание элементов оформления ----------
@@ -350,31 +393,33 @@ public class MainWindow : Window
         }
     }
 
-    /// <summary>Запуск расчёта в фоновом потоке с обновлением интерфейса в реальном времени.</summary>
-    private async void StartSimulation()
+    // ---------- Нажатия кнопок (только интерфейс) ----------
+
+    /// <summary>
+    /// Проверка введённых параметров расчёта. При ошибке пишет её в строку состояния
+    /// и возвращает <c>false</c> — в этом случае событие «старт» не поднимается.
+    /// </summary>
+    private bool TryReadSettings(out CalcSettings settings)
     {
-        if (_running)
-        {
-            return;
-        }
+        settings = new CalcSettings(0, 0.0, 0.0, 1);
 
         if (!int.TryParse((_iterationsBox.Text ?? string.Empty).Trim(), NumberStyles.Integer,
                 CultureInfo.InvariantCulture, out int iterations) || iterations < 0)
         {
             UpdateStatus("Ошибка: число итераций должно быть целым неотрицательным числом.");
-            return;
+            return false;
         }
 
         if (!TryParseDouble(_deltaTimeBox.Text, out double deltaTime) || deltaTime <= 0.0)
         {
             UpdateStatus("Ошибка: шаг по времени должен быть положительным дробным числом (например 0,5 или 0.5).");
-            return;
+            return false;
         }
 
         if (!TryParseDouble(_courantBox.Text, out double courant) || courant <= 0.0)
         {
             UpdateStatus("Ошибка: число Куранта должно быть положительным числом (например 0,15).");
-            return;
+            return false;
         }
 
         if (!int.TryParse((_updatePeriodBox.Text ?? string.Empty).Trim(), NumberStyles.Integer,
@@ -382,81 +427,90 @@ public class MainWindow : Window
         {
             UpdateStatus("Ошибка: интерфейс должен обновляться не реже, чем раз в 1 итерацию "
                 + "(введите целое число 1, 2, 5 ...).");
+            return false;
+        }
+
+        settings = new CalcSettings(iterations, deltaTime, courant, updatePeriod);
+        return true;
+    }
+
+    /// <summary>
+    /// «Старт расчёта»: проверить параметры, подготовить экран (кнопки, график, строка
+    /// состояния) и сообщить о готовности считать. Сам расчёт запускает подписчик
+    /// события <see cref="StartRequested"/> (Program.cs).
+    /// </summary>
+    private void OnStartClicked()
+    {
+        if (_running || !TryReadSettings(out CalcSettings settings))
+        {
             return;
         }
 
-        _running = true;
-        _startButton.IsEnabled = false;
-        _stopButton.IsEnabled = true;
-        _resetButton.IsEnabled = false;
+        SetRunning(true);
         _chart.Clear();
-        _lastCourant = courant;
-
-        const double stableCourant = 1.0 / 6.0;
-        string warning = courant > stableCourant
+        _lastCourant = settings.CourantNumber;
+        _warning = settings.CourantNumber > StableCourant
             ? "  Внимание: C > 1/6 — явная схема может оказаться неустойчивой."
             : string.Empty;
-        double diffusivity = courant * _mesh.CellSize * _mesh.CellSize / deltaTime;
 
-        UpdateStatus($"Расчёт: {iterations} итераций, dt = {deltaTime:0.####} с, C = {courant:0.####}, "
-            + $"a = {diffusivity:0.###E+0} м^2/с, h = {_mesh.CellSize * 1000:0.###} мм, "
-            + $"обновление интерфейса каждые {updatePeriod} итер.{warning}");
+        // Коэффициент температуропроводности: a = C·h²/dt (ядро считает его так же)
+        double diffusivity = settings.CourantNumber * _cellSize * _cellSize / settings.DeltaTime;
 
-        try
-        {
-            await Task.Run(() => _mesh.StartCalc(iterations, deltaTime, courant, OnMeshUpdated, updatePeriod));
+        UpdateStatus($"Расчёт: {settings.Iterations} итераций, dt = {settings.DeltaTime:0.####} с, "
+            + $"C = {settings.CourantNumber:0.####}, a = {diffusivity:0.###E+0} м^2/с, "
+            + $"h = {_cellSize * 1000:0.###} мм, обновление интерфейса каждые "
+            + $"{settings.UpdatePeriod} итер.{_warning}");
 
-            string prefix = _mesh.WasStopped
-                ? $"Расчёт остановлен пользователем: {_mesh.Iteration} итераций, t = {_mesh.Time:0.###} с, "
-                : $"Расчёт завершён: {_mesh.Iteration} итераций, t = {_mesh.Time:0.###} с, ";
-
-            UpdateStatus(prefix + $"a = {_mesh.ThermalDiffusivity:0.###E+0} м^2/с.{warning}");
-        }
-        catch (Exception ex)
-        {
-            UpdateStatus("Ошибка расчёта: " + ex.Message);
-        }
-        finally
-        {
-            _running = false;
-            _startButton.IsEnabled = true;
-            _stopButton.IsEnabled = false;
-            _resetButton.IsEnabled = true;
-        }
+        StartRequested?.Invoke(this, settings);
     }
 
-    /// <summary>Остановка расчёта по кнопке «Остановить» (флаг проверяется в цикле Mesh.StartCalc).</summary>
-    private void RequestStop()
+    /// <summary>
+    /// «Остановить»: сообщить о запросе остановки. Расчёт завершит текущую итерацию
+    /// и выйдет (флаг остановки проверяет Mesh.StartCalc).
+    /// </summary>
+    private void OnStopClicked()
     {
         if (!_running)
         {
             return;
         }
 
-        _mesh.StopCalc();
         _stopButton.IsEnabled = false;
         UpdateStatus("Останавливаем расчёт: завершаем текущую итерацию...");
+        StopRequested?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>
-    /// Обработчик, который вызывает Mesh.StartCalc на потоке расчёта.
-    /// Здесь делается согласованный снимок температур и передаётся в UI-поток.
+    /// «Сброс»: попросить вернуть начальные условия. Само поле перерисует ShowReset,
+    /// когда вызывающий код присвоит сетке начальные температуры.
     /// </summary>
-    private void OnMeshUpdated(Mesh mesh, int iteration, double time, double sumAbsDeltaT)
+    private void OnResetClicked()
     {
-        double[,,] snapshot = mesh.TempSnapshot();
+        if (_running)
+        {
+            return;
+        }
 
-        Dispatcher.UIThread.Post(() => ApplyUpdate(snapshot, iteration, time, sumAbsDeltaT));
+        ResetRequested?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>Обновление изображения среза, графика и строки состояния (UI-поток).</summary>
-    private void ApplyUpdate(double[,,] snapshot, int iteration, double time, double sumAbsDeltaT)
+    // ---------- Приём данных из расчёта (вызывает Program.cs) ----------
+
+    /// <summary>
+    /// Новая итерация расчёта (вызывается в UI-потоке): срез, график и строка состояния.
+    /// </summary>
+    /// <param name="snapshot">Снимок температур ячеек [X, Y, Z], К.</param>
+    /// <param name="iteration">Номер выполненной итерации.</param>
+    /// <param name="time">Текущее время расчёта, с.</param>
+    /// <param name="sumAbsDeltaT">Сумма модулей изменений температуры за итерацию, К.</param>
+    public void ShowFrame(double[,,] snapshot, int iteration, double time, double sumAbsDeltaT)
     {
         if (_closed)
         {
             return;
         }
 
+        CheckSnapshotShape(snapshot);
         _temps = snapshot;
 
         (double min, double max) = FindRange(snapshot);
@@ -467,7 +521,7 @@ public class MainWindow : Window
         UpdateSliceView();
 
         // Пока расчёт идёт, в строке состояния показываем прогресс.
-        // После завершения (когда _running == false) сообщение «Расчёт завершён» не затирается
+        // После завершения (когда _running == false) итоговое сообщение не затирается
         // отложенными обновлениями.
         if (_running)
         {
@@ -476,16 +530,38 @@ public class MainWindow : Window
         }
     }
 
-    /// <summary>Возврат к начальным условиям (кнопка «Сброс»).</summary>
-    private void ResetSimulation()
+    /// <summary>Расчёт завершён (или остановлен): разблокировать кнопки и показать итоги.</summary>
+    /// <param name="stopped">Расчёт был прерван кнопкой «Остановить».</param>
+    /// <param name="iteration">Сколько итераций выполнено.</param>
+    /// <param name="time">Время расчёта, с.</param>
+    /// <param name="thermalDiffusivity">Коэффициент температуропроводности a, м²/с.</param>
+    public void ShowFinished(bool stopped, int iteration, double time, double thermalDiffusivity)
     {
-        if (_running)
-        {
-            return;
-        }
+        SetRunning(false);
 
-        _mesh.SetTemps(_initialTemps);
-        _temps = _mesh.TempSnapshot();
+        string prefix = stopped
+            ? $"Расчёт остановлен пользователем: {iteration} итераций, t = {time:0.###} с, "
+            : $"Расчёт завершён: {iteration} итераций, t = {time:0.###} с, ";
+
+        UpdateStatus(prefix + $"a = {thermalDiffusivity:0.###E+0} м^2/с.{_warning}");
+    }
+
+    /// <summary>Ошибка расчёта: разблокировать кнопки и показать текст ошибки.</summary>
+    public void ShowError(string message)
+    {
+        SetRunning(false);
+        UpdateStatus("Ошибка расчёта: " + message);
+    }
+
+    /// <summary>
+    /// Возврат к начальным условиям (ответ на «Сброс»): новое поле температур,
+    /// сброшенная цветовая шкала и пустой график.
+    /// </summary>
+    /// <param name="temps">Начальные температуры ячеек [X, Y, Z], К.</param>
+    public void ShowReset(double[,,] temps)
+    {
+        CheckSnapshotShape(temps);
+        _temps = temps;
 
         (_colorMin, _colorMax) = FindRange(_temps);
         if (_colorMax - _colorMin < 1e-9)
@@ -496,6 +572,29 @@ public class MainWindow : Window
         _chart.Clear();
         UpdateSliceView();
         UpdateStatus($"Начальные условия восстановлены: {FormatTempRange(_colorMin, _colorMax)}.");
+    }
+
+    /// <summary>Состояние «идёт расчёт»: состояния кнопок и признак для строки состояния.</summary>
+    private void SetRunning(bool running)
+    {
+        _running = running;
+        _startButton.IsEnabled = !running;
+        _stopButton.IsEnabled = running;
+        _resetButton.IsEnabled = !running;
+    }
+
+    /// <summary>Проверка, что снимок температур совпадает по размерам с сеткой окна.</summary>
+    private void CheckSnapshotShape(double[,,] temps)
+    {
+        ArgumentNullException.ThrowIfNull(temps);
+
+        if (temps.GetLength(0) != _nx || temps.GetLength(1) != _ny || temps.GetLength(2) != _nz)
+        {
+            throw new ArgumentException(
+                $"снимок температур имеет размерность "
+                + $"[{temps.GetLength(0)}, {temps.GetLength(1)}, {temps.GetLength(2)}], "
+                + $"а ожидалась [{_nx}, {_ny}, {_nz}]", nameof(temps));
+        }
     }
 
     private void UpdateStatus(string text)

@@ -13,4 +13,10 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
   </ItemGroup>
 
+  <!-- Файлы условий копируются рядом с исполняемым файлом: программа читает их при запуске -->
+  <ItemGroup>
+    <None Update="initial_conditions.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="boundary_conditions.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

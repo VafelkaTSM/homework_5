@@ -480,7 +480,9 @@ public class Mesh
 
         updateHandler?.Invoke(this, 0, Time, 0.0);
 
-        for (int iter = 1; iter <= numberIter; iter++)
+        double time = deltaTime;
+        double maxTime = deltaTime * numberIter;
+        while (time <= maxTime)
         {
             // Проверка запроса на остановку (кнопка «Остановить» в интерфейсе)
             if (_stopRequested)
@@ -489,17 +491,18 @@ public class Mesh
                 break;
             }
 
-            Time = iter * deltaTime;
-
             UpdateFaces();
             double sumAbsDeltaT = UpdateCells(courantNumber);
 
-            Iteration = iter;
+            Time = time;
+            Iteration = (int)(time / deltaTime);
 
-            if (updateHandler != null && (iter % updatePeriod == 0 || iter == numberIter))
+            if (updateHandler != null && (Iteration % updatePeriod == 0 || Iteration == numberIter))
             {
-                updateHandler(this, iter, Time, sumAbsDeltaT);
+                updateHandler(this, Iteration, Time, sumAbsDeltaT);
             }
+
+            time += deltaTime;
         }
     }
 

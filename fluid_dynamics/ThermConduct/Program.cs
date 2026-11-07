@@ -1,83 +1,97 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Threading;
 using ThermConductSim;
 using ThermSliceViewer;
 
 namespace Program;
 
 /// <summary>
-/// Точка входа приложения. Здесь только вызовы API расчётного ядра (ThermConductSim)
-/// и окна визуализации (ThermSliceViewer), плюс начальные условия тестового запуска.
+/// Точка входа приложения.
+/// Порядок работы: начальные и граничные условия читаются из json → создаётся объект
+/// расчёта (сетка) и объект интерфейса (окно) → по кнопке «Старт» вызывается
+/// Mesh.StartCalc с делегатом, который передаёт результаты в окно.
 /// </summary>
 class Program
 {
-    [STAThread]
-    public static void Main(string[] args) =>
-        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+    // Файлы условий: формат описан в MeshConditions (число — равномерное поле/грань,
+    // массив — своя температура у каждой ячейки/участка грани).
+    private const string InitialConditionsFile = "initial_conditions.json";
+    private const string BoundaryConditionsFile = "boundary_conditions.json";
 
-    public static AppBuilder BuildAvaloniaApp() =>
+    [STAThread]
+    public static void Main(string[] args)
+    {
+        // 1. Начальные условия: из json создаются массив температур ячеек [X, Y, Z] и
+        //    шесть массивов граничных условий. По умолчанию поле температур равномерное.
+        MeshConditions conditions = MeshConditions.Load(InitialConditionsFile, BoundaryConditionsFile);
+
+        // 2. Объект расчёта — сетка вместе с начальными и граничными условиями.
+        Mesh mesh = conditions.CreateMesh();
+
+        // 3. Настройка Avalonia; окно создаётся в AfterSetup, когда движок уже готов.
+        BuildAvaloniaApp(conditions, mesh).StartWithClassicDesktopLifetime(args);
+    }
+
+    public static AppBuilder BuildAvaloniaApp(MeshConditions conditions, Mesh mesh) =>
         AppBuilder.Configure<App>()
             .UsePlatformDetect()
             .LogToTrace()
             .AfterSetup(builder =>
             {
-                if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+                if (Application.Current?.ApplicationLifetime is not IClassicDesktopStyleApplicationLifetime desktop)
                 {
-                    desktop.MainWindow = new MainWindow(TestRun.CreateTestMesh());
+                    return;
                 }
-            });
-}
 
-/// <summary>
-/// Начальные и граничные условия тестового запуска: сетка и массивы температур.
-/// </summary>
-public static class TestRun
-{
-    /// <summary>Число ячеек по каждой оси куба.</summary>
-    private const int N = 100;
+                // 4. Объект интерфейса: окно получает начальное поле (его форма задаёт размеры
+                //    сетки) и шаг сетки; о расчёте оно ничего не знает — только рисует данные.
+                var window = new MainWindow(conditions.Initial, mesh.CellSize);
+
+                // 5. Связь интерфейса и расчёта: кнопки окна поднимают события, расчёт
+                //    возвращает данные через делегат CalcUpdateHandler (см. RunCalculation).
+                window.StartRequested += async (_, settings) => await RunCalculation(window, mesh, settings);
+                window.StopRequested += (_, _) => mesh.StopCalc();
+                window.ResetRequested += (_, _) =>
+                {
+                    mesh.SetTemps(conditions.Initial);      // вернуть начальные температуры
+                    window.ShowReset(mesh.TempSnapshot());  // перерисовать поле и очистить график
+                };
+
+                desktop.MainWindow = window;
+            });
 
     /// <summary>
-    /// Сетка 32x32x32 (h = 0.001 м между центрами ячеек) с горячим пятном в центре:
-    /// грань x = min — постоянный источник 100 К, остальные грани — 0 К.
-    /// Начальные и граничные условия передаются при создании сетки массивами температур.
+    /// Запуск расчёта по кнопке «Старт». Mesh.StartCalc синхронный (занимает вызвавший
+    /// поток), поэтому он выполняется в фоновой задаче, а окно остаётся отзывчивым.
     /// </summary>
-    public static Mesh CreateTestMesh()
+    private static async Task RunCalculation(MainWindow window, Mesh mesh, CalcSettings settings)
     {
-        // Начальное условие: горячее пятно в центре (0..100 К)
-        double[,,] temps = new double[N, N, N];
-        double center = N / 2.0;
-        for (int x = 0; x < N; x++)
+        try
         {
-            for (int y = 0; y < N; y++)
-            {
-                for (int z = 0; z < N; z++)
-                {
-                    double rad = Math.Sqrt(Math.Pow(x - center, 2) + Math.Pow(y - center, 2) + Math.Pow(z - center, 2));
-                    temps[x, y, z] = Math.Max(0.0, 100.0 - rad * 3.5);
-                }
-            }
+            await Task.Run(() => mesh.StartCalc(
+                settings.Iterations,
+                settings.DeltaTime,
+                settings.CourantNumber,
+                (m, iteration, time, sumAbsDeltaT) => OnMeshUpdated(window, m, iteration, time, sumAbsDeltaT),
+                settings.UpdatePeriod));
+
+            window.ShowFinished(mesh.WasStopped, mesh.Iteration, mesh.Time, mesh.ThermalDiffusivity);
         }
-
-        double[,] cold = Plane(N, N, 0.0);     // остальные грани — 0 К
-        double[,] hot = Plane(N, N, 100.0);    // грань x = min — нагреваемая стенка
-
-        return new Mesh(temps,
-            xPast: hot, xNext: cold,
-            yPast: cold, yNext: cold,
-            zPast: cold, zNext: cold);
+        catch (Exception ex)
+        {
+            window.ShowError(ex.Message);
+        }
     }
 
-    /// <summary>Плоскость грани куба, заполненная одной температурой.</summary>
-    private static double[,] Plane(int d0, int d1, double value)
+    /// <summary>
+    /// Делегат «расчёт → интерфейс», который передаётся в Mesh.StartCalc. Вызывается на
+    /// потоке расчёта: здесь делается снимок температур, а отрисовка ставится в очередь
+    /// UI-потока (Avalonia разрешает менять элементы окна только из него).
+    /// </summary>
+    private static void OnMeshUpdated(MainWindow window, Mesh mesh, int iteration, double time, double sumAbsDeltaT)
     {
-        double[,] plane = new double[d0, d1];
-        for (int i = 0; i < d0; i++)
-        {
-            for (int j = 0; j < d1; j++)
-            {
-                plane[i, j] = value;
-            }
-        }
-        return plane;
+        double[,,] snapshot = mesh.TempSnapshot();     // копия — безопасно передать в другой поток
+        Dispatcher.UIThread.Post(() => window.ShowFrame(snapshot, iteration, time, sumAbsDeltaT));
     }
 }
