@@ -1,378 +1,239 @@
-"""Лабораторная работа № 5.
+"""Лабораторная работа № 2 «Методы численной оптимизации».
 
-Поиск минимума двумерных функций Розенброка и Химмельблау методами:
-    * наискорейшего градиентного спуска;
-    * покомпонентного (покоординатного) градиентного спуска;
-    * градиентного спуска с моментом Нестерова;
-    * Adam.
+Блок 1. Градиентные методы первого порядка (Розенброк, Химмельблау):
+    наискорейший спуск, покомпонентный спуск (последовательный и со
+    случайным перемешиванием), момент Нестерова, Adam; градиент —
+    аналитический и численный (конечные разности).
+Блок 2. Методы второго порядка: Ньютон и BFGS; гессиан — аналитический
+    и численный.
+Блок 3. Методы нулевого порядка: Нелдер–Мид (2D и 6D Розенброк),
+    рой частиц PSO с адаптивными коэффициентами.
+Блок 4. Нелинейные наименьшие квадраты: Гаусс–Ньютон, Левенберг–Марквардт
+    (минимум Розенброка 2D и аппроксимация зашумлённых данных).
+Блок 5. Распределение времени на сессию: проекция на симплекс и
+    квадратичный штраф; мультизапуск, кластеризация, итоговые таблицы.
 
-Градиент целевой функции вычисляется двумя способами:
-    * аналитически (точные формулы);
-    * численно (scipy.differentiate.derivative -- конечно-разностная
-      формула 8-го порядка точности).
-
-Для каждой функции строится рисунок: изолинии целевой функции и
-траектории всех методов для обоих способов вычисления градиента.
-
-Запуск: python main.py
+Запуск: python main.py (или uv run python main.py)
 """
 
 from __future__ import annotations
 
-from typing import Callable
+import os
+
+import matplotlib
+
+if not os.environ.get("DISPLAY"):
+    matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.differentiate import derivative
 
-Vector = np.ndarray
-GradFunc = Callable[[Vector], Vector]
-
-
-class Objective:
-    """Двумерная целевая функция с аналитическим и численным градиентом.
-
-    Attributes:
-        name: название функции;
-        x0: начальная точка поиска;
-        xlim: пределы построения графика по оси x;
-        ylim: пределы построения графика по оси y;
-        levels: уровни изолиний для визуализации.
-    """
-
-    name: str = ""
-    x0: Vector = np.zeros(2)
-    xlim: tuple[float, float] = (-1.0, 1.0)
-    ylim: tuple[float, float] = (-1.0, 1.0)
-    levels: Vector = np.geomspace(0.1, 1000.0, 30)
-
-    def __init__(self, func: Callable[[float, float], float],
-                 grad: Callable[[float, float], Vector]) -> None:
-        """Инициализация по скалярной функции и её аналитическому градиенту.
-
-        Args:
-            func: функция двух переменных f(x1, x2) -> float;
-            grad: аналитический градиент (x1, x2) -> массив из двух чисел.
-        """
-        self._func = func
-        self._grad = grad
-
-    def f(self, x: Vector) -> float:
-        """Значение целевой функции в точке x = [x1, x2]."""
-        return float(self._func(float(x[0]), float(x[1])))
-
-    def grad_analytic(self, x: Vector) -> Vector:
-        """Аналитический градиент в точке x."""
-        return np.asarray(self._grad(float(x[0]), float(x[1])), dtype=float)
-
-    def grad_numeric(self, x: Vector) -> Vector:
-        """Численный градиент в точке x.
-
-        Каждая частная производная находится функцией
-        scipy.differentiate.derivative (формула 8-го порядка точности).
-        """
-        x = np.asarray(x, dtype=float)
-        grad = np.empty_like(x)
-        for i in range(x.size):
-            partial = np.vectorize(self._partial(x, i))
-            grad[i] = float(derivative(partial, float(x[i]), order=8).df)
-        return grad
-
-    def _partial(self, x: Vector, i: int) -> Callable[[float], float]:
-        """Возвращает функцию одной переменной t -> f(x с заменой x[i] на t)."""
-        def g(t: float) -> float:
-            z = x.copy()
-            z[i] = t
-            return self.f(z)
-        return g
-
-
-class Rosenbrock(Objective):
-    """Функция Розенброка f = (1 - x1)^2 + 100 * (x2 - x1^2)^2 (минимум в (1, 1))."""
-
-    name = "Розенброк"
-    x0 = np.array([-1.5, 2.0])
-    xlim = (-2.0, 2.0)
-    ylim = (-1.0, 3.0)
-    levels = np.geomspace(0.1, 5000.0, 30)
-
-    def __init__(self) -> None:
-        super().__init__(self._func, self._grad)
-
-    @staticmethod
-    def _func(x1: float, x2: float) -> float:
-        """Значение функции Розенброка."""
-        return (1.0 - x1) ** 2 + 100.0 * (x2 - x1 ** 2) ** 2
-
-    @staticmethod
-    def _grad(x1: float, x2: float) -> Vector:
-        """Аналитический градиент функции Розенброка."""
-        dx1 = -2.0 * (1.0 - x1) - 400.0 * x1 * (x2 - x1 ** 2)
-        dx2 = 200.0 * (x2 - x1 ** 2)
-        return np.array([dx1, dx2])
-
-
-class Himmelblau(Objective):
-    """Функция Химмельблау f = (x1^2 + x2 - 11)^2 + (x1 + x2^2 - 7)^2."""
-
-    name = "Химмельблау"
-    x0 = np.array([-4.0, 4.0])
-    xlim = (-6.0, 6.0)
-    ylim = (-6.0, 6.0)
-    levels = np.geomspace(0.1, 2000.0, 30)
-
-    def __init__(self) -> None:
-        super().__init__(self._func, self._grad)
-
-    @staticmethod
-    def _func(x1: float, x2: float) -> float:
-        """Значение функции Химмельблау."""
-        return (x1 ** 2 + x2 - 11.0) ** 2 + (x1 + x2 ** 2 - 7.0) ** 2
-
-    @staticmethod
-    def _grad(x1: float, x2: float) -> Vector:
-        """Аналитический градиент функции Химмельблау."""
-        dx1 = 4.0 * x1 * (x1 ** 2 + x2 - 11.0) + 2.0 * (x1 + x2 ** 2 - 7.0)
-        dx2 = 2.0 * (x1 ** 2 + x2 - 11.0) + 4.0 * x2 * (x1 + x2 ** 2 - 7.0)
-        return np.array([dx1, dx2])
-
-
-class Optimizer:
-    """Базовый класс метода градиентной оптимизации.
-
-    Args:
-        max_iter: максимальное число итераций;
-        tol: порог остановки по норме градиента.
-    """
-
-    name: str = ""
-
-    def __init__(self, max_iter: int = 2000, tol: float = 1e-5) -> None:
-        """Задание параметров остановки метода."""
-        self.max_iter = max_iter
-        self.tol = tol
-
-    def run(self, obj: Objective, grad: GradFunc, x0: Vector) -> Vector:
-        """Минимизирует функцию и возвращает траекторию (массив N x 2).
-
-        Args:
-            obj: целевая функция;
-            grad: функция вычисления градиента (аналитическая или численная);
-            x0: начальная точка.
-        """
-        raise NotImplementedError
-
-    @staticmethod
-    def _line_search(obj: Objective, x: Vector, direction: Vector,
-                     derivative_along: float, alpha0: float = 1.0) -> float:
-        """Дробный шаг (условие Армихо) вдоль направления direction.
-
-        Args:
-            obj: целевая функция;
-            x: текущая точка;
-            direction: направление спуска;
-            derivative_along: производная функции по направлению (g^T d);
-            alpha0: начальная величина шага.
-
-        Returns:
-            Подобранная величина шага.
-        """
-        alpha = alpha0
-        fx = obj.f(x)
-        for _ in range(50):
-            if obj.f(x + alpha * direction) <= fx + 1e-4 * alpha * derivative_along:
-                return alpha
-            alpha *= 0.5
-        return alpha
-
-    @staticmethod
-    def _to_array(points: list[Vector]) -> Vector:
-        """Преобразует список точек траектории в массив N x 2."""
-        return np.array(points)
-
-
-class SteepestDescent(Optimizer):
-    """Наискорейший градиентный спуск с выбором шага по условию Армихо."""
-
-    name = "Наискорейший спуск"
-
-    def __init__(self, max_iter: int = 6000, tol: float = 1e-5,
-                 alpha0: float = 1.0) -> None:
-        """Задание параметров, включая начальный шаг alpha0."""
-        super().__init__(max_iter, tol)
-        self.alpha0 = alpha0
-
-    def run(self, obj: Objective, grad: GradFunc, x0: Vector) -> Vector:
-        """Спуск вдоль антиградиента с дробным шагом."""
-        x = np.asarray(x0, dtype=float)
-        points = [x.copy()]
-        for _ in range(self.max_iter):
-            g = grad(x)
-            if np.linalg.norm(g) < self.tol:
-                break
-            direction = -g
-            alpha = self._line_search(obj, x, direction, float(g @ direction), self.alpha0)
-            x = x + alpha * direction
-            points.append(x.copy())
-        return self._to_array(points)
-
-
-class CoordinateDescent(Optimizer):
-    """Покомпонентный (покоординатный) градиентный спуск.
-
-    На каждой итерации компоненты x1, x2 обновляются по очереди; шаг по
-    каждой координате подбирается дробным методом (условие Армихо).
-    """
-
-    name = "Покомпонентный спуск"
-
-    def __init__(self, max_iter: int = 1500, tol: float = 1e-5,
-                 alpha0: float = 1.0) -> None:
-        """Задание параметров, включая начальный шаг alpha0."""
-        super().__init__(max_iter, tol)
-        self.alpha0 = alpha0
-
-    def run(self, obj: Objective, grad: GradFunc, x0: Vector) -> Vector:
-        """Обновление координат по одной с выбором шага."""
-        x = np.asarray(x0, dtype=float)
-        points = [x.copy()]
-        for _ in range(self.max_iter):
-            if np.linalg.norm(grad(x)) < self.tol:
-                break
-            for i in range(x.size):
-                g = grad(x)
-                direction = np.zeros_like(x)
-                direction[i] = -g[i]
-                alpha = self._line_search(obj, x, direction,
-                                          float(g @ direction), self.alpha0)
-                x = x + alpha * direction
-                points.append(x.copy())
-        return self._to_array(points)
-
-
-class NesterovMomentum(Optimizer):
-    """Градиентный спуск с моментом Нестерова.
-
-    Схема: v <- mu * v - lr * grad(x + mu * v); x <- x + v.
-    """
-
-    name = "Момент Нестерова"
-
-    def __init__(self, lr: float = 1e-3, mu: float = 0.95,
-                 max_iter: int = 4000, tol: float = 1e-5) -> None:
-        """Задание скорости обучения lr и коэффициента момента mu."""
-        super().__init__(max_iter, tol)
-        self.lr = lr
-        self.mu = mu
-
-    def run(self, obj: Objective, grad: GradFunc, x0: Vector) -> Vector:
-        """Спуск с накоплением скорости и «заглядыванием вперёд»."""
-        x = np.asarray(x0, dtype=float)
-        velocity = np.zeros_like(x)
-        points = [x.copy()]
-        for _ in range(self.max_iter):
-            if np.linalg.norm(grad(x)) < self.tol:
-                break
-            velocity = self.mu * velocity - self.lr * grad(x + self.mu * velocity)
-            x = x + velocity
-            points.append(x.copy())
-        return self._to_array(points)
-
-
-class Adam(Optimizer):
-    """Метод Adam (адаптивные оценки первого и второго моментов градиента)."""
-
-    name = "Adam"
-
-    def __init__(self, lr: float = 0.05, beta1: float = 0.9,
-                 beta2: float = 0.999, eps: float = 1e-8,
-                 max_iter: int = 4000, tol: float = 1e-5) -> None:
-        """Задание скорости обучения и параметров сглаживания моментов."""
-        super().__init__(max_iter, tol)
-        self.lr = lr
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.eps = eps
-
-    def run(self, obj: Objective, grad: GradFunc, x0: Vector) -> Vector:
-        """Итерации Adam со смещёнными оценками моментов."""
-        x = np.asarray(x0, dtype=float)
-        m = np.zeros_like(x)
-        v = np.zeros_like(x)
-        points = [x.copy()]
-        for t in range(1, self.max_iter + 1):
-            g = grad(x)
-            if np.linalg.norm(g) < self.tol:
-                break
-            m = self.beta1 * m + (1.0 - self.beta1) * g
-            v = self.beta2 * v + (1.0 - self.beta2) * g ** 2
-            m_hat = m / (1.0 - self.beta1 ** t)
-            v_hat = v / (1.0 - self.beta2 ** t)
-            x = x - self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
-            points.append(x.copy())
-        return self._to_array(points)
-
-
-def visualize(obj: Objective) -> None:
-    """Строит изолинии функции и траектории всех методов.
-
-    Для каждого метода показаны две траектории: с аналитическим
-    градиентом (сплошная линия) и с численным (штриховая линия).
-    """
-    methods = [
-        SteepestDescent(),
-        CoordinateDescent(),
-        NesterovMomentum(),
-        Adam(),
-    ]
-    gradients = [
-        ("аналитический", obj.grad_analytic, "-"),
-        ("численный", obj.grad_numeric, "--"),
-    ]
-
-    grid_x, grid_y = np.meshgrid(
-        np.linspace(*obj.xlim, 400), np.linspace(*obj.ylim, 400)
-    )
-    grid_z = np.vectorize(lambda a, b: obj.f(np.array([a, b])))(grid_x, grid_y)
-
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-    x0_str = ", ".join(f"{value:g}" for value in obj.x0)
-    fig.suptitle(f"Функция {obj.name}: траектории методов "
-                 f"(начальная точка ({x0_str}))")
-
-    for ax, method in zip(axes.ravel(), methods):
-        ax.contourf(grid_x, grid_y, grid_z, levels=obj.levels,
-                    cmap="viridis", extend="both")
-        ax.contour(grid_x, grid_y, grid_z, levels=obj.levels,
-                   colors="black", linewidths=0.3)
-        for grad_name, grad, style in gradients:
-            points = method.run(obj, grad, obj.x0)
-            ax.plot(points[:, 0], points[:, 1], style, color="red",
-                    linewidth=1.4, label=f"градиент: {grad_name}")
-            print(f"  {obj.name:12s} | {method.name:22s} | {grad_name:14s} | "
-                  f"итераций: {len(points) - 1:5d} | "
-                  f"x* = ({points[-1, 0]: .6f}, {points[-1, 1]: .6f}) | "
-                  f"f = {obj.f(points[-1]):.3e}")
-        ax.plot(*obj.x0, "wo", markersize=5, label="старт")
-        ax.set_xlim(obj.xlim)
-        ax.set_ylim(obj.ylim)
-        ax.set_title(method.name)
-        ax.set_xlabel("x1")
-        ax.set_ylabel("x2")
-        ax.legend(loc="upper right", fontsize=8)
-
+from least_squares import (GaussNewton, LevenbergMarquardt,
+                           fitting_problem, rosenbrock_problem)
+from objectives import Himmelblau, Rosenbrock, TargetFunction, Vector
+from optimizers import (Adam, BFGS, CoordinateDescent, NesterovMomentum,
+                        Newton, Optimizer, SteepestDescent)
+from session_task import run_session_block
+from zeroth_order import NelderMead, PSO
+
+FIRST_ORDER: list[Optimizer] = [
+    SteepestDescent(),
+    CoordinateDescent(),
+    CoordinateDescent(shuffle=True),
+    NesterovMomentum(),
+    Adam(),
+]
+
+
+def _grid(obj: TargetFunction) -> tuple[Vector, Vector, Vector]:
+    """Регулярная сетка и значения функции на ней для построения изолиний."""
+    xs, ys = np.meshgrid(np.linspace(*obj.xlim, 400), np.linspace(*obj.ylim, 400))
+    zs = np.vectorize(lambda a, b: obj.f(np.array([a, b])))(xs, ys)
+    return xs, ys, zs
+
+
+def _contours(ax: plt.Axes, obj: TargetFunction,
+              grid: tuple[Vector, Vector, Vector]) -> None:
+    ax.contourf(*grid, levels=obj.levels, cmap="viridis", extend="both")
+    ax.contour(*grid, levels=obj.levels, colors="black", linewidths=0.3)
+
+
+def _report(name: str, variant: str, points: Vector, f: float) -> None:
+    """Печать сводки по запуску: число итераций, точка окончания, f."""
+    coord = ", ".join(f"{v:g}" for v in points[-1])
+    print(f"  {name:28s} | {variant:16s} | итераций: {len(points) - 1:5d} | "
+          f"x* = ({coord}) | f = {f:.3e}")
+
+
+def _plot_first_order(ax: plt.Axes, obj: TargetFunction, method: Optimizer,
+                      grid: tuple[Vector, Vector, Vector]) -> None:
+    """Изолинии и траектории метода с обоими способами градиента."""
+    gradients = [("аналитический", "grad", "-"),
+                 ("численный", "grad_numeric", "--")]
+    _contours(ax, obj, grid)
+    for grad_name, attr, style in gradients:
+        points = method.run(obj, obj.x0, grad=getattr(obj, attr))
+        ax.plot(points[:, 0], points[:, 1], style, color="red",
+                linewidth=1.2, label=f"градиент: {grad_name}")
+        _report(method.name, grad_name, points, obj.f(points[-1]))
+    ax.plot(*obj.x0, "wo", markersize=5, label="старт")
+    ax.set(xlim=obj.xlim, ylim=obj.ylim, title=method.name)
+    ax.legend(loc="upper right", fontsize=8)
+
+
+def block1() -> None:
+    """Блок 1: первый порядок, изолинии с траекториями (рис. 2 x 3)."""
+    for obj in (Rosenbrock(), Himmelblau()):
+        print(f"\n=== Блок 1. Первый порядок: {obj.name} ===")
+        grid = _grid(obj)
+        fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+        fig.suptitle(f"{obj.name}: градиентные методы первого порядка")
+        for ax, method in zip(axes.ravel(), FIRST_ORDER):
+            _plot_first_order(ax, obj, method, grid)
+        axes.ravel()[-1].axis("off")
+        fig.tight_layout()
+        fig.savefig(f"{type(obj).__name__.lower()}.png", dpi=150)
+
+
+def block2() -> None:
+    """Блок 2: Ньютон (аналит./числ. гессиан) и BFGS, рис. 2 x 3."""
+    print("\n=== Блок 2. Второй порядок ===")
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    fig.suptitle("Методы второго порядка")
+    for row, obj in enumerate((Rosenbrock(), Himmelblau())):
+        grid = _grid(obj)
+        cells = [(Newton(hessian=obj.hess), "Ньютон (аналит. H)"),
+                 (Newton(hessian=obj.hess_numeric), "Ньютон (числ. H)"),
+                 (BFGS(), "BFGS")]
+        print(f"\n--- {obj.name} ---")
+        for col, (method, title) in enumerate(cells):
+            points = method.run(obj, obj.x0)
+            ax = axes[row, col]
+            _contours(ax, obj, grid)
+            ax.plot(points[:, 0], points[:, 1], "r-", linewidth=1.2)
+            ax.plot(*obj.x0, "wo", markersize=5)
+            ax.set(xlim=obj.xlim, ylim=obj.ylim, title=f"{obj.name}: {title}")
+            _report(title, "аналит. градиент", points, obj.f(points[-1]))
     fig.tight_layout()
-    fig.savefig(f"{type(obj).__name__.lower()}.png", dpi=150)
+    fig.savefig("second_order.png", dpi=150)
+
+
+def block3() -> None:
+    """Блок 3: Нелдер–Мид (2D — траектория симплекса, 6D — сходимость)
+    и PSO с визуализацией частиц и скоростей."""
+    print("\n=== Блок 3. Нулевой порядок ===")
+    obj = Rosenbrock()
+    grid = _grid(obj)
+
+    nm = NelderMead()
+    centroids = nm.run(obj, obj.x0)
+    print("\n--- Нелдер–Мид, 2D ---")
+    _report(nm.name, "2D Розенброк", centroids, obj.f(centroids[-1]))
+    fig, ax = plt.subplots(figsize=(8, 6))
+    _contours(ax, obj, grid)
+    ax.plot(centroids[:, 0], centroids[:, 1], "r-", linewidth=1.2,
+            label="центроид симплекса")
+    for k in np.linspace(0, len(nm.simplex_history_) - 1, 6).astype(int):
+        simplex = np.vstack([nm.simplex_history_[k], nm.simplex_history_[k][0]])
+        ax.plot(simplex[:, 0], simplex[:, 1], color="white", linewidth=0.7,
+                alpha=0.7)
+    ax.plot(*obj.x0, "wo", markersize=5, label="старт")
+    ax.set(xlim=obj.xlim, ylim=obj.ylim,
+           title="Нелдер–Мид: траектория симплекса (2D Розенброк)")
+    ax.legend(loc="upper right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig("nelder_mead_2d.png", dpi=150)
+
+    obj6 = Rosenbrock(n=6)
+    nm6 = NelderMead(max_iter=5000, tol=1e-7)
+    nm6.run(obj6, obj6.x0)
+    print("\n--- Нелдер–Мид, 6D ---")
+    print(f"  итераций: {len(nm6.f_history_) - 1:5d} | "
+          f"f* = {nm6.f_history_[-1]:.3e}")
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.semilogy(nm6.f_history_, linewidth=1.5)
+    ax.set(xlabel="номер итерации k", ylabel="f(theta*_k)",
+           title="Нелдер–Мид: сходимость на 6D функции Розенброка")
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+    fig.savefig("nelder_mead_6d.png", dpi=150)
+
+    pso = PSO(n_particles=30, max_iter=150, seed=1)
+    best = pso.run(obj, bounds=np.array([obj.xlim, obj.ylim]))
+    print("\n--- Рой частиц (PSO), 2D Розенброк ---")
+    print(f"  итераций: {pso.max_iter:5d} | x* = ({best[0]:g}, {best[1]:g}) | "
+          f"f = {obj.f(best):.3e}")
+    fig, axes = plt.subplots(2, 2, figsize=(11, 9))
+    fig.suptitle("PSO: частицы и скорости на изолиниях Розенброка")
+    idxs = np.linspace(0, len(pso.snapshots_) - 1, 4).astype(int)
+    for ax, k in zip(axes.ravel(), idxs):
+        x, v, g = pso.snapshots_[k]
+        _contours(ax, obj, grid)
+        ax.quiver(x[:, 0], x[:, 1], v[:, 0], v[:, 1], color="yellow",
+                  width=0.004)
+        ax.scatter(x[:, 0], x[:, 1], c="red", s=15)
+        ax.plot(*g, "w*", markersize=12)
+        ax.set(xlim=obj.xlim, ylim=obj.ylim, title=f"итерация {k}")
+    fig.tight_layout()
+    fig.savefig("pso.png", dpi=150)
+
+
+def block4() -> None:
+    """Блок 4: МНК — Розенброк 2D (траектории) и аппроксимация данных."""
+    print("\n=== Блок 4. Нелинейные наименьшие квадраты ===")
+    obj = Rosenbrock()
+    grid = _grid(obj)
+    problem = rosenbrock_problem()
+    gn, lm = GaussNewton(), LevenbergMarquardt()
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    for ax, method in zip(axes[0], (gn, lm)):
+        points = method.run(problem, obj.x0)
+        _contours(ax, obj, grid)
+        ax.plot(points[:, 0], points[:, 1], "r.-", linewidth=1.2, markersize=3)
+        ax.plot(*obj.x0, "wo", markersize=5)
+        ax.set(xlim=obj.xlim, ylim=obj.ylim,
+               title=f"Розенброк 2D: {method.name}")
+        _report(method.name, "Розенброк 2D", points, problem.f(points[-1]))
+
+    fit, x_data, y_data, model = fitting_problem()
+    theta0 = np.array([1.0, 1.0, 1.0, 0.0])
+    gn.run(fit, theta0)
+    traj_lm = lm.run(fit, theta0)
+    _report(gn.name, "аппроксимация", gn.history_, fit.f(gn.history_[-1]))
+    _report(lm.name, "аппроксимация", traj_lm, fit.f(traj_lm[-1]))
+
+    ax = axes[1, 0]
+    ax.scatter(x_data, y_data, c="black", s=15, label="данные")
+    xs = np.linspace(x_data.min(), x_data.max(), 300)
+    for k in np.unique(np.linspace(0, len(traj_lm) - 1, 5).astype(int)):
+        ax.plot(xs, model(traj_lm[k], xs), linewidth=1.2,
+                label=f"итерация {k}")
+    ax.set(title=f"Эволюция кривой g_theta(x): {lm.name}", xlabel="x", ylabel="y")
+    ax.legend(fontsize=8)
+
+    ax = axes[1, 1]
+    ax.semilogy(gn.f_history_, linewidth=1.4, label=gn.name)
+    ax.semilogy(lm.f_history_, linewidth=1.4, label=lm.name)
+    ax.set(xlabel="номер итерации k", ylabel="S(theta_k)",
+           title="Сходимость невязки")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8)
+
+    fig.suptitle("Методы нелинейных наименьших квадратов")
+    fig.tight_layout()
+    fig.savefig("least_squares.png", dpi=150)
 
 
 def main() -> None:
-    """Запускает оптимизацию для обеих функций и строит графики."""
-    for obj in (Rosenbrock(), Himmelblau()):
-        print(f"\n=== Функция {obj.name} ===")
-        visualize(obj)
+    """Запускает все блоки лабораторной работы."""
+    block1()
+    block2()
+    block3()
+    block4()
+    run_session_block()  # печатает сводные таблицы
     plt.show()
 
 
 if __name__ == "__main__":
     main()
-

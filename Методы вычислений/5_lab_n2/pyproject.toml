@@ -1,0 +1,17 @@
+[project]
+name = "lab2-optimization"
+version = "0.1.0"
+description = "Лабораторная работа № 2 «Методы численной оптимизации»"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 100
