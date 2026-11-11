@@ -116,36 +116,55 @@ class Optimizer:
 
 
 class SteepestDescent(Optimizer):
-    """Наискорейший градиентный спуск с одномерным поиском шага (LineSearch)."""
+    """Градиентный спуск по направлению антиградиента.
+
+    По умолчанию шаг подбирается одномерным поиском (LineSearch) —
+    наискорейший спуск. Если задан lr, поиск не выполняется и делается
+    фиксированный шаг x <- x - lr * grad f.
+    """
 
     name = "Наискорейший спуск"
 
-    def __init__(self, max_iter: int = 20000, tol: float = 1e-5) -> None:
+    def __init__(self, lr: float | None = None, max_iter: int = 20000,
+                 tol: float = 1e-5) -> None:
         super().__init__(max_iter, tol)
+        self.lr = lr
+        if lr is not None:
+            self.name = "Градиентный спуск (фикс. шаг)"
 
     def _move(self, obj, grad, x, g):
         direction = -g
-        alpha = self._line_search.search(obj, x, direction)
+        alpha = (self.lr if self.lr is not None
+                 else self._line_search.search(obj, x, direction))
         point = x + alpha * direction
         return [point], point
 
 
 class CoordinateDescent(Optimizer):
     """Покомпонентный спуск: координаты обновляются по одной, градиент
-    пересчитывается после каждого шага компоненты, шаг — LineSearch.
+    пересчитывается после каждого шага компоненты.
+
+    По умолчанию шаг по каждой координате подбирается LineSearch;
+    если задан lr, выполняется фиксированный шаг по компоненте градиента.
 
     Args:
         shuffle: False — последовательный обход x -> y -> ..., True —
                  случайное перемешивание порядка координат на каждой итерации.
+        lr: None — одномерный поиск шага, число — фиксированный множитель.
     """
 
-    def __init__(self, shuffle: bool = False, max_iter: int = 20000,
-                 tol: float = 1e-5, seed: int = 0) -> None:
+    def __init__(self, shuffle: bool = False, lr: float | None = None,
+                 max_iter: int = 20000, tol: float = 1e-5, seed: int = 0
+                 ) -> None:
         super().__init__(max_iter, tol)
         self.shuffle = shuffle
+        self.lr = lr
         self._rng = np.random.default_rng(seed)
-        self.name = ("Покомпонентный (перемеш.)" if shuffle
-                     else "Покомпонентный (x -> y)")
+        if lr is not None:
+            self.name = "Покомпонентный (фикс. шаг)"
+        else:
+            self.name = ("Покомпонентный (перемеш.)" if shuffle
+                         else "Покомпонентный (x -> y)")
 
     def _move(self, obj, grad, x, g):
         points = []
@@ -155,7 +174,8 @@ class CoordinateDescent(Optimizer):
             g = np.asarray(grad(x), dtype=float)
             direction = np.zeros_like(x)
             direction[i] = -g[i]
-            alpha = self._line_search.search(obj, x, direction)
+            alpha = (self.lr if self.lr is not None
+                     else self._line_search.search(obj, x, direction))
             x = x + alpha * direction
             points.append(x)
         return points, x
@@ -207,6 +227,51 @@ class Adam(Optimizer):
         m_hat = self._m / (1.0 - self.beta1 ** self._t)
         v_hat = self._v / (1.0 - self.beta2 ** self._t)
         point = x - self.lr * m_hat / (np.sqrt(v_hat) + self.eps)
+        return [point], point
+
+
+class Adagrad(Optimizer):
+    """Метод Adagrad: накапливаемая сумма квадратов градиента нормирует шаг.
+
+    Схема: G <- G + (grad f)^2; x <- x - lr * grad f / (sqrt(G) + eps).
+    """
+
+    name = "Adagrad"
+
+    def __init__(self, lr: float = 1.0, eps: float = 1e-8,
+                 max_iter: int = 20000, tol: float = 1e-5) -> None:
+        super().__init__(max_iter, tol)
+        self.lr, self.eps = lr, eps
+
+    def _reset(self, x: Vector) -> None:
+        self._g2 = np.zeros_like(x)
+
+    def _move(self, obj, grad, x, g):
+        self._g2 += g ** 2
+        point = x - self.lr * g / (np.sqrt(self._g2) + self.eps)
+        return [point], point
+
+
+class RMSProp(Optimizer):
+    """Метод RMSProp: экспоненциальное скользящее среднее квадратов градиента.
+
+    Схема: v <- beta * v + (1 - beta) * (grad f)^2;
+    x <- x - lr * grad f / (sqrt(v) + eps).
+    """
+
+    name = "RMSProp"
+
+    def __init__(self, lr: float = 0.01, beta: float = 0.999, eps: float = 1e-8,
+                 max_iter: int = 20000, tol: float = 1e-5) -> None:
+        super().__init__(max_iter, tol)
+        self.lr, self.beta, self.eps = lr, beta, eps
+
+    def _reset(self, x: Vector) -> None:
+        self._v = np.zeros_like(x)
+
+    def _move(self, obj, grad, x, g):
+        self._v = self.beta * self._v + (1.0 - self.beta) * g ** 2
+        point = x - self.lr * g / (np.sqrt(self._v) + self.eps)
         return [point], point
 
 

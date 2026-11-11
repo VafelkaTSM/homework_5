@@ -1,8 +1,9 @@
 """Лабораторная работа № 2 «Методы численной оптимизации».
 
 Блок 1. Градиентные методы первого порядка (Розенброк, Химмельблау):
-    наискорейший спуск, покомпонентный спуск (последовательный и со
-    случайным перемешиванием), момент Нестерова, Adam; градиент —
+    наискорейший спуск, градиентный и покомпонентный спуски с фиксированным
+    шагом, покомпонентный спуск (последовательный и со случайным
+    перемешиванием), момент Нестерова, Adam, Adagrad, RMSProp; градиент —
     аналитический и численный (конечные разности).
 Блок 2. Методы второго порядка: Ньютон и BFGS; гессиан — аналитический
     и численный.
@@ -29,23 +30,35 @@ if not os.environ.get("DISPLAY"):
 import matplotlib.pyplot as plt
 import numpy as np
 
-from least_squares import (GaussNewton, LevenbergMarquardt,
-                           fitting_problem, rosenbrock_problem)
+from least_squares import GaussNewton, LevenbergMarquardt, fitting_problem, rosenbrock_problem
 from objectives import Himmelblau, Rosenbrock, TargetFunction, Vector
-from optimizers import (Adam, BFGS, CoordinateDescent, NesterovMomentum,
-                        Newton, Optimizer, SteepestDescent)
+from optimizers import (
+    BFGS,
+    Adagrad,
+    Adam,
+    CoordinateDescent,
+    NesterovMomentum,
+    Newton,
+    Optimizer,
+    RMSProp,
+    SteepestDescent,
+)
 from session_task import run_session_block
-from zeroth_order import NelderMead, PSO
+from zeroth_order import PSO, NelderMead
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 RESULTS_DIR.mkdir(exist_ok=True)
 
 FIRST_ORDER: list[Optimizer] = [
     SteepestDescent(),
+    SteepestDescent(lr=2e-3),
     CoordinateDescent(),
     CoordinateDescent(shuffle=True),
+    CoordinateDescent(lr=2e-3),
     NesterovMomentum(),
     Adam(),
+    Adagrad(),
+    RMSProp(),
 ]
 
 
@@ -86,15 +99,14 @@ def _plot_first_order(ax: plt.Axes, obj: TargetFunction, method: Optimizer,
 
 
 def block1() -> None:
-    """Блок 1: первый порядок, изолинии с траекториями (рис. 2 x 3)."""
+    """Блок 1: первый порядок, изолинии с траекториями (рис. 3 x 3)."""
     for obj in (Rosenbrock(), Himmelblau()):
         print(f"\n=== Блок 1. Первый порядок: {obj.name} ===")
         grid = _grid(obj)
-        fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+        fig, axes = plt.subplots(3, 3, figsize=(15, 13))
         fig.suptitle(f"{obj.name}: градиентные методы первого порядка")
         for ax, method in zip(axes.ravel(), FIRST_ORDER):
             _plot_first_order(ax, obj, method, grid)
-        axes.ravel()[-1].axis("off")
         fig.tight_layout()
         fig.savefig(RESULTS_DIR / f"{type(obj).__name__.lower()}.png", dpi=150)
 
