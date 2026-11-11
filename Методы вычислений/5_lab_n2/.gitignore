@@ -1,4 +1,7 @@
 code/__pycache__
+code/.venv
+code/lab2_optimization.egg-info
+code/uv.lock
 report/*
 !report/main.pdf
 !report/main.tex

@@ -2,7 +2,7 @@
 name = "lab2-optimization"
 version = "0.1.0"
 description = "Лабораторная работа № 2 «Методы численной оптимизации»"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
     "numpy>=1.24",
     "matplotlib>=3.7",
@@ -10,7 +10,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "ruff>=0.6",
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
 ]
 
 [tool.ruff]
