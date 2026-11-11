@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import matplotlib
 
@@ -35,6 +36,9 @@ from optimizers import (Adam, BFGS, CoordinateDescent, NesterovMomentum,
                         Newton, Optimizer, SteepestDescent)
 from session_task import run_session_block
 from zeroth_order import NelderMead, PSO
+
+RESULTS_DIR = Path(__file__).resolve().parent / "results"
+RESULTS_DIR.mkdir(exist_ok=True)
 
 FIRST_ORDER: list[Optimizer] = [
     SteepestDescent(),
@@ -92,7 +96,7 @@ def block1() -> None:
             _plot_first_order(ax, obj, method, grid)
         axes.ravel()[-1].axis("off")
         fig.tight_layout()
-        fig.savefig(f"{type(obj).__name__.lower()}.png", dpi=150)
+        fig.savefig(RESULTS_DIR / f"{type(obj).__name__.lower()}.png", dpi=150)
 
 
 def block2() -> None:
@@ -115,7 +119,7 @@ def block2() -> None:
             ax.set(xlim=obj.xlim, ylim=obj.ylim, title=f"{obj.name}: {title}")
             _report(title, "аналит. градиент", points, obj.f(points[-1]))
     fig.tight_layout()
-    fig.savefig("second_order.png", dpi=150)
+    fig.savefig(RESULTS_DIR / "second_order.png", dpi=150)
 
 
 def block3() -> None:
@@ -142,7 +146,7 @@ def block3() -> None:
            title="Нелдер–Мид: траектория симплекса (2D Розенброк)")
     ax.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
-    fig.savefig("nelder_mead_2d.png", dpi=150)
+    fig.savefig(RESULTS_DIR / "nelder_mead_2d.png", dpi=150)
 
     obj6 = Rosenbrock(n=6)
     nm6 = NelderMead(max_iter=5000, tol=1e-7)
@@ -156,7 +160,7 @@ def block3() -> None:
            title="Нелдер–Мид: сходимость на 6D функции Розенброка")
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig("nelder_mead_6d.png", dpi=150)
+    fig.savefig(RESULTS_DIR / "nelder_mead_6d.png", dpi=150)
 
     pso = PSO(n_particles=30, max_iter=150, seed=1)
     best = pso.run(obj, bounds=np.array([obj.xlim, obj.ylim]))
@@ -175,7 +179,7 @@ def block3() -> None:
         ax.plot(*g, "w*", markersize=12)
         ax.set(xlim=obj.xlim, ylim=obj.ylim, title=f"итерация {k}")
     fig.tight_layout()
-    fig.savefig("pso.png", dpi=150)
+    fig.savefig(RESULTS_DIR / "pso.png", dpi=150)
 
 
 def block4() -> None:
@@ -222,7 +226,7 @@ def block4() -> None:
 
     fig.suptitle("Методы нелинейных наименьших квадратов")
     fig.tight_layout()
-    fig.savefig("least_squares.png", dpi=150)
+    fig.savefig(RESULTS_DIR / "least_squares.png", dpi=150)
 
 
 def main() -> None:

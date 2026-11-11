@@ -30,8 +30,8 @@
 % --- Настройка страницы ---
 \geometry{top=1.5cm, bottom=1.5cm, left=3cm, right=1.5cm}
 
-% --- Поиск картинок в корне проекта ---
-\graphicspath{{../}}
+% --- Картинки: абсолютный путь к code/results (кавычки обязательны из-за пробелов в пути) ---
+\newcommand{\img}[2][]{\includegraphics[#1]{{"/home/vafelkatsm/Desktop/homework_5/Методы вычислений/5_lab_n2/code/results/#2"}.png}}
 
 % --- Настройка гиперссылок ---
 \hypersetup{
@@ -340,14 +340,14 @@
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\textwidth]{rosenbrock.png}
+    \img[width=0.95\textwidth]{rosenbrock}
     \caption{Траектории методов первого порядка на функции Розенброка}
     \label{fig:rosenbrock}
 \end{figure}
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\textwidth]{himmelblau.png}
+    \img[width=0.95\textwidth]{himmelblau}
     \caption{Траектории методов первого порядка на функции Химмельблау}
     \label{fig:himmelblau}
 \end{figure}
@@ -380,7 +380,7 @@
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\textwidth]{second_order.png}
+    \img[width=0.95\textwidth]{second_order}
     \caption{Траектории методов второго порядка: Ньютон (аналитический и численный гессиан) и BFGS}
     \label{fig:second}
 \end{figure}
@@ -391,14 +391,14 @@
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.8\textwidth]{nelder_mead_2d.png}
+    \img[width=0.8\textwidth]{nelder_mead_2d}
     \caption{Нелдер–Мид: траектория центроида и положение симплекса (2D Розенброк)}
     \label{fig:nm2d}
 \end{figure}
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.8\textwidth]{nelder_mead_6d.png}
+    \img[width=0.8\textwidth]{nelder_mead_6d}
     \caption{Нелдер–Мид: сходимость $f(\vec{\theta}^{\,*_k})$ на шестимерной функции Розенброка}
     \label{fig:nm6d}
 \end{figure}
@@ -407,7 +407,7 @@
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.85\textwidth]{pso.png}
+    \img[width=0.85\textwidth]{pso}
     \caption{PSO: распределение частиц и их скоростей на изолиниях Розенброка}
     \label{fig:pso}
 \end{figure}
@@ -440,7 +440,7 @@
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\textwidth]{least_squares.png}
+    \img[width=0.95\textwidth]{least_squares}
     \caption{МНК: траектории на Розенброке, эволюция кривой аппроксимации и сходимость невязки}
     \label{fig:ls}
 \end{figure}
