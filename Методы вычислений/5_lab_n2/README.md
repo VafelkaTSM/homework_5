@@ -1,1 +1,1 @@
-# Подробный отчёт в [main.pdf](report/main.pdf).
+Подробный отчёт в [main.pdf](report/main.pdf).
