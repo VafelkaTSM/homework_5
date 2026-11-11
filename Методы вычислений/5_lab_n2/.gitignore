@@ -2,6 +2,7 @@ code/__pycache__
 code/.venv
 code/lab2_optimization.egg-info
 code/uv.lock
+code/.ruff_cache
 report/*
 !report/main.pdf
 !report/main.tex
