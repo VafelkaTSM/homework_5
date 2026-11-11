@@ -1,4 +1,5 @@
 code/__pycache__
 report/.
-*report/main.pdf
-*report/main.tex
+!report/main.pdf
+!report/main.tex
+text.txt
