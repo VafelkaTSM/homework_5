@@ -5,4 +5,3 @@ code/uv.lock
 report/*
 !report/main.pdf
 !report/main.tex
-text.txt
