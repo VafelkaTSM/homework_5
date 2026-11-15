@@ -1,15 +1,80 @@
 namespace ThermConductSim;
 
 /// <summary>
-/// Ячейка сетки: хранит только свою настоящую температуру и шесть ограничивающих её граней.
-/// Грани лежат отдельными полями, а не в массиве: в горячем цикле (Cell.UpdateT) это прямая
-/// загрузка поля по фиксированному смещению — без промежуточного объекта, без проверки границ
-/// и без индексной арифметики. Имена полей повторяют роли, которые знает Face.PastCell/NextCell.
+/// Параметры одного шага по времени: всё, что методу подсчёта теплопередачи нужно
+/// знать про текущий шаг. Структура собирается один раз на расчёт и передаётся
+/// в каждый вызов метода по ссылке (<c>in</c>) — без копирования в горячем цикле.
+/// </summary>
+public readonly struct CellStepContext
+{
+    /// <summary>Шаг по времени Δt одной итерации, с.</summary>
+    public double DeltaTime { get; }
+
+    /// <summary>Коэффициент температуропроводности a, м²/с.</summary>
+    public double ThermalDiffusivity { get; }
+
+    /// <summary>Шаг сетки по оси X, м.</summary>
+    public double CellSizeX { get; }
+
+    /// <summary>Шаг сетки по оси Y, м.</summary>
+    public double CellSizeY { get; }
+
+    /// <summary>Шаг сетки по оси Z, м.</summary>
+    public double CellSizeZ { get; }
+
+    /// <summary>Произведение a·Δt, м²: множитель при сумме вторых производных.</summary>
+    public double ADt => ThermalDiffusivity * DeltaTime;
+
+    public CellStepContext(double deltaTime, double thermalDiffusivity,
+        double cellSizeX, double cellSizeY, double cellSizeZ)
+    {
+        DeltaTime = deltaTime;
+        ThermalDiffusivity = thermalDiffusivity;
+        CellSizeX = cellSizeX;
+        CellSizeY = cellSizeY;
+        CellSizeZ = cellSizeZ;
+    }
+}
+
+/// <summary>
+/// Метод подсчёта теплопередачи: один шаг по времени для одной ячейки.
+/// Метод выбирается ключом из conditions.json и копируется в каждую ячейку
+/// (словарь <see cref="ThermalFunctions.CellUpdateMethods"/>).
+/// </summary>
+/// <param name="cell">Ячейка, чью температуру нужно пересчитать (меняется прямо в делегате).</param>
+/// <param name="step">Параметры шага: Δt, a и шаги сетки по осям.</param>
+/// <param name="stepIndex">Номер шага с нуля в текущем расчёте (многошаговые методы используют его для разгона).</param>
+/// <returns>Приращение температуры ячейки на этом шаге, К.</returns>
+public delegate double CellUpdateDelegate(Cell cell, in CellStepContext step, int stepIndex);
+
+/// <summary>
+/// Начальное распределение температуры: функция координат центра ячейки, м (результат — К).
+/// Выбирается ключом из conditions.json (словарь <see cref="ThermalFunctions.InitialTemperatures"/>).
+/// </summary>
+public delegate double InitialTemperatureDelegate(double x, double y, double z);
+
+/// <summary>
+/// Ячейка сетки: хранит свою настоящую температуру, температуру с предыдущего шага
+/// (для многошаговых методов) и шесть ограничивающих её граней.
+/// Грани лежат отдельными полями, а не в массиве: в горячем цикле это прямая
+/// загрузка поля по фиксированному смещению — без промежуточного объекта, без проверки
+/// границ и без индексной арифметики. Имена полей повторяют роли, которые знает
+/// Face.PastCell/NextCell.
 /// </summary>
 public class Cell
 {
     /// <summary>Температура в центре ячейки, К.</summary>
     public double Temp;
+
+    /// <summary>Температура на предыдущем шаге по времени, К (используется многошаговыми методами).</summary>
+    public double PrevTemp;
+
+    /// <summary>
+    /// Метод подсчёта теплопередачи — копия делегата из словаря ThermalFunctions.CellUpdateMethods
+    /// по ключу из conditions.json. Сетка присваивает его каждой ячейке при создании.
+    /// </summary>
+    public CellUpdateDelegate UpdateMethod { get; set; } =
+        ThermalFunctions.CellUpdateMethods["explicit"];
 
     /// <summary>
     /// Грань со стороны «past» по оси X (−нормаль). У ячейки x = 0 это внешняя грань куба,
@@ -40,33 +105,27 @@ public class Cell
     public Cell(double temp = 0.0)
     {
         Temp = temp;
+        PrevTemp = temp;
     }
 
     /// <summary>
-    /// Один явный шаг по времени для уравнения dT/dt = a * (d2T/dx2 + d2T/dy2 + d2T/dz2).
-    /// Так как C = a * dt / h^2, то dT = C * h^2 * ((SecDerT_x_next - SecDerT_x_past) + ... по y и z).
-    /// Ячейка должна быть собрана сеткой: все шесть граней не null (это гарантирует Mesh).
+    /// Один шаг по времени для ячейки: работу делает делегат <see cref="UpdateMethod"/>
+    /// (метод подсчёта теплопередачи выбирается ключом из conditions.json).
     /// </summary>
-    /// <param name="courantNumber">Число Куранта C = a * deltaTime / h^2.</param>
-    /// <param name="cellSize">Расстояние между центрами соседних ячеек h, м.</param>
+    /// <param name="step">Параметры шага: Δt, a и шаги сетки по осям.</param>
+    /// <param name="stepIndex">Номер шага с нуля в текущем расчёте.</param>
     /// <returns>Приращение температуры на этом шаге, К.</returns>
-    public double UpdateT(double courantNumber, double cellSize)
-    {
-        double sumSecDer = (XNext.SecDerT - XPast.SecDerT)
-                         + (YNext.SecDerT - YPast.SecDerT)
-                         + (ZNext.SecDerT - ZPast.SecDerT);
-
-        double deltaTemp = courantNumber * cellSize * cellSize * sumSecDer;
-        Temp += deltaTemp;
-        return deltaTemp;
-    }
+    public double UpdateT(in CellStepContext step, int stepIndex) =>
+        UpdateMethod(this, in step, stepIndex);
 }
 
 /// <summary>
 /// Грань ячейки. Хранит ссылки на две соседние ячейки (или на одну, если грань внешняя),
 /// поэтому сама пересчитывает вторую производную температуры по нормали:
-/// SecDerT = (T_next - T_past) / h^2. У внешней грани куба недостающая температура
-/// восстанавливается из граничного условия BoundaryTemp — числа, заданного при создании сетки.
+/// SecDerT = (T_next − T_past) / h², где h — шаг сетки по оси грани (хранится в грани).
+/// У внешней грани куба недостающая температура восстанавливается из граничного условия
+/// <see cref="Boundary"/> (1–3-го рода, возможно зависящего от времени): по температуре
+/// стенки строится фиктивная ячейка-зеркало T_ghost = 2·T_стенки − T_ячейки.
 /// </summary>
 public class Face
 {
@@ -77,13 +136,16 @@ public class Face
     public readonly Cell? NextCell;
 
     /// <summary>
-    /// Температура грани из граничного условия, К. Осмысленна только на внешних гранях куба
-    /// (у внутренних остаётся 0).
+    /// Граничное условие внешней грани (1–3-го рода). Осмысленно только на внешних
+    /// гранях куба; у внутренних граней — null.
     /// </summary>
-    public readonly double BoundaryTemp;
+    public readonly BoundaryCondition? Boundary;
 
-    /// <summary>(T_{i+1} - T_i) / h^2 вдоль нормали грани, К/м^2.</summary>
+    /// <summary>(T_{i+1} − T_i) / h² вдоль нормали грани, К/м².</summary>
     public double SecDerT;
+
+    /// <summary>Шаг сетки по оси грани h, м.</summary>
+    private readonly double _cellSize;
 
     /// <summary>
     /// Внутренняя грань между двумя соседями. Обе ячейки уже должны существовать:
@@ -91,62 +153,73 @@ public class Face
     /// </summary>
     /// <param name="pastCell">Ячейка со стороны «past» (−нормаль грани).</param>
     /// <param name="nextCell">Ячейка со стороны «next» (+нормаль грани).</param>
-    public Face(Cell pastCell, Cell nextCell) : this(pastCell, nextCell, 0.0)
+    /// <param name="cellSize">Шаг сетки по оси грани h, м.</param>
+    public Face(Cell pastCell, Cell nextCell, double cellSize)
+        : this(pastCell, nextCell, null, cellSize)
     {
     }
 
     /// <summary>
     /// Грань с граничным условием: одна из соседних ячеек отсутствует, а вместо её
-    /// температуры при пересчёте SecDerT берётся BoundaryTemp.
+    /// температуры при пересчёте SecDerT используется Boundary (возможно, зависящее от времени).
     /// </summary>
     /// <param name="pastCell">Ячейка со стороны «past»; null у внешней грани {x, y, z} = min.</param>
     /// <param name="nextCell">Ячейка со стороны «next»; null у внешней грани {x, y, z} = max.</param>
-    /// <param name="boundaryTemp">Температура грани из граничного условия, К.</param>
-    public Face(Cell? pastCell, Cell? nextCell, double boundaryTemp)
+    /// <param name="boundary">Граничное условие (вид и функции значений).</param>
+    /// <param name="cellSize">Шаг сетки по оси грани h, м.</param>
+    public Face(Cell? pastCell, Cell? nextCell, BoundaryCondition? boundary, double cellSize)
     {
         if (pastCell == null && nextCell == null)
         {
             throw new ArgumentException("у грани должна быть хотя бы одна соседняя ячейка", nameof(pastCell));
         }
-
-        PastCell = pastCell;
-        NextCell = nextCell;
-        BoundaryTemp = boundaryTemp;
-    }
-
-    /// <summary>Грань внешняя: одной из соседних ячеек нет, вместо неё работает граничное условие.</summary>
-    public bool IsBoundary => PastCell == null || NextCell == null;
-
-    /// <summary>
-    /// Пересчёт (T_{i+1} - T_i) / h^2 по текущим температурам соседних ячеек.
-    /// На внешней грани температура соседней (фиктивной) ячейки восстанавливается как
-    /// T_ghost = 2 * T_boundary - T_cell, то есть SecDerT = 2 * (T_cell - T_boundary) / h^2
-    /// со стороны min и SecDerT = 2 * (T_boundary - T_cell) / h^2 со стороны max.
-    /// </summary>
-    /// <param name="cellSize">Расстояние между центрами соседних ячеек h, м.</param>
-    public void UpdateSecDerT(double cellSize)
-    {
         if (!(cellSize > 0.0))
         {
             throw new ArgumentOutOfRangeException(nameof(cellSize), "cellSize <= 0");
         }
 
-        double h2 = cellSize * cellSize;
+        PastCell = pastCell;
+        NextCell = nextCell;
+        Boundary = boundary;
+        _cellSize = cellSize;
+    }
+
+    /// <summary>Грань внешняя: вместо одной из соседних ячеек работает граничное условие.</summary>
+    public bool IsBoundary => Boundary != null;
+
+    /// <summary>
+    /// Пересчёт (T_{i+1} − T_i) / h² по текущим температурам соседних ячеек.
+    /// На внешней грани температура соседней (фиктивной) ячейки восстанавливается как
+    /// T_ghost = 2·T_стенки − T_cell, то есть SecDerT = 2·(T_cell − T_стенки) / h²
+    /// со стороны min и SecDerT = 2·(T_стенки − T_cell) / h² со стороны max.
+    /// Температура стенки берётся из граничного условия (1–3-го рода) по текущему времени.
+    /// </summary>
+    /// <param name="time">Текущее время расчёта, с (для ГУ, зависящих от времени).</param>
+    /// <param name="thermalConductivity">Теплопроводность материала λ, Вт/(м·К) (нужна ГУ 2-го и 3-го рода).</param>
+    public void UpdateSecDerT(double time, double thermalConductivity)
+    {
+        double h2 = _cellSize * _cellSize;
 
         if (PastCell != null && NextCell != null)
         {
             // Внутренняя грань: разность температур двух соседних ячеек.
             SecDerT = (NextCell.Temp - PastCell.Temp) / h2;
+            return;
         }
-        else if (PastCell != null)
+
+        // Внешняя грань: температура стенки из ГУ → фиктивная ячейка-зеркало.
+        Cell cell = (PastCell ?? NextCell)!;
+        double wallTemp = Boundary!.WallTemperature(cell.Temp, time, thermalConductivity, _cellSize);
+
+        if (PastCell != null)
         {
             // Внешняя грань {x, y, z} = max: соседняя ячейка есть только со стороны «past».
-            SecDerT = 2.0 * (BoundaryTemp - PastCell.Temp) / h2;
+            SecDerT = 2.0 * (wallTemp - cell.Temp) / h2;
         }
         else
         {
             // Внешняя грань {x, y, z} = min: соседняя ячейка есть только со стороны «next».
-            SecDerT = 2.0 * (NextCell!.Temp - BoundaryTemp) / h2;
+            SecDerT = 2.0 * (cell.Temp - wallTemp) / h2;
         }
     }
 }
@@ -164,20 +237,39 @@ public delegate void CalcUpdateHandler(Mesh mesh, int iteration, double time, do
 
 /// <summary>
 /// Куб из ячеек с гранями (ячейки — центры, грани — плоскости между ними).
-/// Начальные и граничные условия задаются один раз при создании сетки двумерными и
-/// трёхмерным массивами температур.
+/// Начальные и граничные условия задаются один раз при создании сетки: поле температур
+/// массивом [X, Y, Z], шесть плоскостей граничных условий (1–3-го рода, константы или
+/// функции времени), шаги сетки по осям, метод подсчёта теплопередачи — делегатом.
 /// </summary>
 public class Mesh
 {
-    /// <summary>Расстояние между центрами соседних ячеек по умолчанию, м.</summary>
+    /// <summary>Шаг сетки по умолчанию, м (если в conditions.json не задан ни size, ни cellSize).</summary>
     public const double DefaultCellSize = 0.001;
+
+    /// <summary>Теплопроводность материала по умолчанию, Вт/(м·К) — ориентировочно сталь.</summary>
+    public const double DefaultThermalConductivity = 45.0;
 
     readonly int _nx, _ny, _nz;
     readonly Cell[,,] _cellList;
     readonly Face[,,] _faceXList, _faceYList, _faceZList;
 
-    /// <summary>Расстояние между центрами соседних ячеек, м.</summary>
-    public double CellSize { get; }
+    /// <summary>Шаг сетки по оси X (расстояние между центрами соседних ячеек), м.</summary>
+    public double CellSizeX { get; }
+
+    /// <summary>Шаг сетки по оси Y, м.</summary>
+    public double CellSizeY { get; }
+
+    /// <summary>Шаг сетки по оси Z, м.</summary>
+    public double CellSizeZ { get; }
+
+    /// <summary>Наименьший из шагов сетки, м (используется для определения числа Куранта).</summary>
+    public double MinCellSize { get; }
+
+    /// <summary>Шаги сетки по осям [hx, hy, hz], м (копия, менять можно свободно).</summary>
+    public double[] CellSizes => new[] { CellSizeX, CellSizeY, CellSizeZ };
+
+    /// <summary>Теплопроводность материала λ, Вт/(м·К): нужна граничным условиям 2-го и 3-го рода.</summary>
+    public double ThermalConductivity { get; }
 
     /// <summary>Текущее время расчёта, с.</summary>
     public double Time { get; private set; }
@@ -185,7 +277,7 @@ public class Mesh
     /// <summary>Номер последней выполненной итерации.</summary>
     public int Iteration { get; private set; }
 
-    /// <summary>Коэффициент температуропроводности a = C * h^2 / dt последнего расчёта, м^2/с.</summary>
+    /// <summary>Коэффициент температуропроводности a последнего расчёта, м²/с.</summary>
     public double ThermalDiffusivity { get; private set; }
 
     // Флаг остановки расчёта (меняется из другого потока — кнопка «Остановить» в интерфейсе)
@@ -207,21 +299,28 @@ public class Mesh
 
     /// <summary>
     /// Создание сетки X на Y на Z ячеек вместе с начальными и граничными условиями.
-    /// Размерность сетки берётся из массива начальных температур.
+    /// Размерность сетки берётся из массива начальных температур; шаги сетки могут
+    /// отличаться по осям (h = размер области / число ячеек, оба задаются в conditions.json).
     /// </summary>
     /// <param name="initTemp">Начальные температуры всех ячеек, размерность [X, Y, Z], К.</param>
-    /// <param name="xPast">Температура грани x = min для каждой ячейки плоскости, размерность [Y, Z], К.</param>
-    /// <param name="xNext">Температура грани x = max, размерность [Y, Z], К.</param>
-    /// <param name="yPast">Температура грани y = min, размерность [X, Z], К.</param>
-    /// <param name="yNext">Температура грани y = max, размерность [X, Z], К.</param>
-    /// <param name="zPast">Температура грани z = min, размерность [X, Y], К.</param>
-    /// <param name="zNext">Температура грани z = max, размерность [X, Y], К.</param>
-    /// <param name="cellSize">Расстояние между центрами соседних ячеек, м.</param>
+    /// <param name="xPast">ГУ грани x = min для каждой ячейки плоскости, размерность [Y, Z].</param>
+    /// <param name="xNext">ГУ грани x = max, размерность [Y, Z].</param>
+    /// <param name="yPast">ГУ грани y = min, размерность [X, Z].</param>
+    /// <param name="yNext">ГУ грани y = max, размерность [X, Z].</param>
+    /// <param name="zPast">ГУ грани z = min, размерность [X, Y].</param>
+    /// <param name="zNext">ГУ грани z = max, размерность [X, Y].</param>
+    /// <param name="cellSizeX">Шаг сетки по оси X, м.</param>
+    /// <param name="cellSizeY">Шаг сетки по оси Y, м.</param>
+    /// <param name="cellSizeZ">Шаг сетки по оси Z, м.</param>
+    /// <param name="updateMethod">Метод подсчёта теплопередачи: копируется в каждую ячейку.</param>
+    /// <param name="thermalConductivity">Теплопроводность материала λ, Вт/(м·К), для ГУ 2-го и 3-го рода.</param>
     public Mesh(double[,,] initTemp,
-        double[,] xPast, double[,] xNext,
-        double[,] yPast, double[,] yNext,
-        double[,] zPast, double[,] zNext,
-        double cellSize = DefaultCellSize)
+        BoundaryCondition[,] xPast, BoundaryCondition[,] xNext,
+        BoundaryCondition[,] yPast, BoundaryCondition[,] yNext,
+        BoundaryCondition[,] zPast, BoundaryCondition[,] zNext,
+        double cellSizeX, double cellSizeY, double cellSizeZ,
+        CellUpdateDelegate updateMethod,
+        double thermalConductivity = DefaultThermalConductivity)
     {
         if (initTemp == null)
         {
@@ -236,9 +335,17 @@ public class Mesh
         {
             throw new ArgumentOutOfRangeException(nameof(initTemp), "initTemp задан не для всех осей сетки");
         }
-        if (cellSize <= 0)
+        if (!(cellSizeX > 0.0) || !(cellSizeY > 0.0) || !(cellSizeZ > 0.0))
         {
-            throw new ArgumentOutOfRangeException(nameof(cellSize), "cellSize <= 0");
+            throw new ArgumentOutOfRangeException(nameof(cellSizeX), "все шаги сетки должны быть > 0");
+        }
+        if (updateMethod == null)
+        {
+            throw new ArgumentNullException(nameof(updateMethod));
+        }
+        if (!(thermalConductivity > 0.0))
+        {
+            throw new ArgumentOutOfRangeException(nameof(thermalConductivity), "thermalConductivity <= 0");
         }
 
         CheckShape(xPast, nameof(xPast), _ny, _nz);
@@ -248,7 +355,11 @@ public class Mesh
         CheckShape(zPast, nameof(zPast), _nx, _ny);
         CheckShape(zNext, nameof(zNext), _nx, _ny);
 
-        CellSize = cellSize;
+        CellSizeX = cellSizeX;
+        CellSizeY = cellSizeY;
+        CellSizeZ = cellSizeZ;
+        MinCellSize = Math.Min(cellSizeX, Math.Min(cellSizeY, cellSizeZ));
+        ThermalConductivity = thermalConductivity;
         _cellList = new Cell[_nx, _ny, _nz];
         _faceXList = new Face[_nx + 1, _ny, _nz];
         _faceYList = new Face[_nx, _ny + 1, _nz];
@@ -256,34 +367,34 @@ public class Mesh
 
         // Ячейки создаются первыми: грань хранит ссылки на своих соседей
         // (Face.PastCell / Face.NextCell), поэтому её можно создать только после ячеек.
-        CreateCells(initTemp);
+        CreateCells(initTemp, updateMethod);
         CreateFaces(xPast, xNext, yPast, yNext, zPast, zNext);
     }
 
     /// <summary>
     /// Создание всех граней сетки. Каждая грань сразу получает ссылки на соседние ячейки
     /// и попадает в их поля (XPast/XNext, YPast/YNext, ZPast/ZNext); у шести внешних
-    /// плоскостей куба вместо одной из ячеек стоит граничное условие — число из
-    /// соответствующего двумерного массива.
+    /// плоскостей куба вместо одной из ячеек стоит граничное условие из соответствующей
+    /// двумерной плоскости (в единичном экземпляре на всю грань или своё у каждой ячейки).
     /// </summary>
     private void CreateFaces(
-        double[,] xPast, double[,] xNext,
-        double[,] yPast, double[,] yNext,
-        double[,] zPast, double[,] zNext)
+        BoundaryCondition[,] xPast, BoundaryCondition[,] xNext,
+        BoundaryCondition[,] yPast, BoundaryCondition[,] yNext,
+        BoundaryCondition[,] zPast, BoundaryCondition[,] zNext)
     {
         for (int y = 0; y < _ny; y++)
         {
             for (int z = 0; z < _nz; z++)
             {
                 // Внешние грани x = min / x = max: соседняя ячейка только с одной стороны.
-                _faceXList[0, y, z] = CreateFace(null, _cellList[0, y, z], xPast[y, z], 0);
+                _faceXList[0, y, z] = CreateFace(null, _cellList[0, y, z], xPast[y, z], CellSizeX, 0);
 
                 for (int x = 1; x < _nx; x++)
                 {
-                    _faceXList[x, y, z] = CreateFace(_cellList[x - 1, y, z], _cellList[x, y, z], 0.0, 0);
+                    _faceXList[x, y, z] = CreateFace(_cellList[x - 1, y, z], _cellList[x, y, z], null, CellSizeX, 0);
                 }
 
-                _faceXList[_nx, y, z] = CreateFace(_cellList[_nx - 1, y, z], null, xNext[y, z], 0);
+                _faceXList[_nx, y, z] = CreateFace(_cellList[_nx - 1, y, z], null, xNext[y, z], CellSizeX, 0);
             }
         }
 
@@ -291,14 +402,14 @@ public class Mesh
         {
             for (int z = 0; z < _nz; z++)
             {
-                _faceYList[x, 0, z] = CreateFace(null, _cellList[x, 0, z], yPast[x, z], 1);
+                _faceYList[x, 0, z] = CreateFace(null, _cellList[x, 0, z], yPast[x, z], CellSizeY, 1);
 
                 for (int y = 1; y < _ny; y++)
                 {
-                    _faceYList[x, y, z] = CreateFace(_cellList[x, y - 1, z], _cellList[x, y, z], 0.0, 1);
+                    _faceYList[x, y, z] = CreateFace(_cellList[x, y - 1, z], _cellList[x, y, z], null, CellSizeY, 1);
                 }
 
-                _faceYList[x, _ny, z] = CreateFace(_cellList[x, _ny - 1, z], null, yNext[x, z], 1);
+                _faceYList[x, _ny, z] = CreateFace(_cellList[x, _ny - 1, z], null, yNext[x, z], CellSizeY, 1);
             }
         }
 
@@ -306,14 +417,14 @@ public class Mesh
         {
             for (int y = 0; y < _ny; y++)
             {
-                _faceZList[x, y, 0] = CreateFace(null, _cellList[x, y, 0], zPast[x, y], 2);
+                _faceZList[x, y, 0] = CreateFace(null, _cellList[x, y, 0], zPast[x, y], CellSizeZ, 2);
 
                 for (int z = 1; z < _nz; z++)
                 {
-                    _faceZList[x, y, z] = CreateFace(_cellList[x, y, z - 1], _cellList[x, y, z], 0.0, 2);
+                    _faceZList[x, y, z] = CreateFace(_cellList[x, y, z - 1], _cellList[x, y, z], null, CellSizeZ, 2);
                 }
 
-                _faceZList[x, y, _nz] = CreateFace(_cellList[x, y, _nz - 1], null, zNext[x, y], 2);
+                _faceZList[x, y, _nz] = CreateFace(_cellList[x, y, _nz - 1], null, zNext[x, y], CellSizeZ, 2);
             }
         }
     }
@@ -324,14 +435,15 @@ public class Mesh
     /// </summary>
     /// <param name="pastCell">Ячейка со стороны «past»; null у внешней грани {x, y, z} = min.</param>
     /// <param name="nextCell">Ячейка со стороны «next»; null у внешней грани {x, y, z} = max.</param>
-    /// <param name="boundaryTemp">Температура грани из ГУ, К (у внутренних граней не используется).</param>
+    /// <param name="boundary">ГУ внешней грани (у внутренних — null).</param>
+    /// <param name="cellSize">Шаг сетки по оси грани h, м.</param>
     /// <param name="axis">Ось грани: 0 — X, 1 — Y, 2 — Z.</param>
     /// <returns>Созданная грань.</returns>
-    private static Face CreateFace(Cell? pastCell, Cell? nextCell, double boundaryTemp, int axis)
+    private static Face CreateFace(Cell? pastCell, Cell? nextCell, BoundaryCondition? boundary, double cellSize, int axis)
     {
         Face face = pastCell != null && nextCell != null
-            ? new Face(pastCell, nextCell)
-            : new Face(pastCell, nextCell, boundaryTemp);
+            ? new Face(pastCell, nextCell, cellSize)
+            : new Face(pastCell, nextCell, boundary, cellSize);
 
         switch (axis)
         {
@@ -376,10 +488,12 @@ public class Mesh
     }
 
     /// <summary>
-    /// Создание ячеек: только температура из начального условия. Грани вписывает CreateFaces —
-    /// грань ссылается на соседние ячейки, поэтому ячейки должны существовать раньше граней.
+    /// Создание ячеек: температура из начального условия и копия метода подсчёта
+    /// теплопередачи (делегата из словаря по ключу из conditions.json).
+    /// Грани вписывает CreateFaces — грань ссылается на соседние ячейки,
+    /// поэтому ячейки должны существовать раньше граней.
     /// </summary>
-    private void CreateCells(double[,,] initTemp)
+    private void CreateCells(double[,,] initTemp, CellUpdateDelegate updateMethod)
     {
         for (int x = 0; x < _nx; x++)
         {
@@ -387,7 +501,7 @@ public class Mesh
             {
                 for (int z = 0; z < _nz; z++)
                 {
-                    _cellList[x, y, z] = new Cell(initTemp[x, y, z]);
+                    _cellList[x, y, z] = new Cell(initTemp[x, y, z]) { UpdateMethod = updateMethod };
                 }
             }
         }
@@ -412,6 +526,7 @@ public class Mesh
                 for (int z = 0; z < _nz; z++)
                 {
                     _cellList[x, y, z].Temp = temp[x, y, z];
+                    _cellList[x, y, z].PrevTemp = temp[x, y, z];
                 }
             }
         }
@@ -436,20 +551,21 @@ public class Mesh
 
     /// <summary>
     /// Запуск расчёта: на каждом шаге по текущим температурам ячеек пересчитываются
-    /// вторые производные на гранях, затем температуры ячеек простым явным одношаговым
-    /// методом dT/dt = a * (d2T/dx2 + d2T/dy2 + d2T/dz2). Граничные условия постоянны
-    /// (заданы числами при создании сетки), поэтому от времени они не зависят.
+    /// вторые производные на гранях, затем температуры ячеек методом подсчёта
+    /// теплопередачи (делегатом из conditions.json). Граничные условия перевычисляются
+    /// каждый шаг по текущему времени, поэтому могут зависеть от времени.
     /// </summary>
     /// <param name="numberIter">Количество итераций (шагов по времени).</param>
     /// <param name="deltaTime">Шаг по времени одной итерации, с.</param>
-    /// <param name="courantNumber">Число Куранта C = a * deltaTime / h^2 (устойчиво при C &lt;= 1/6).</param>
+    /// <param name="thermalDiffusivity">Коэффициент температуропроводности a, м²/с
+    /// (устойчивость явной схемы: a·Δt·(1/hx² + 1/hy² + 1/hz²) ≤ 1/2).</param>
     /// <param name="updateHandler">
     /// Ссылка на метод, через который в графический интерфейс (AvaloniaUI) передаются данные
     /// и обновляется отображение процесса в реальном времени. Можно передать null, если
     /// промежуточные данные не нужны.
     /// </param>
     /// <param name="updatePeriod">Через сколько итераций вызывать updateHandler (обновлять интерфейс).</param>
-    public void StartCalc(int numberIter, double deltaTime, double courantNumber,
+    public void StartCalc(int numberIter, double deltaTime, double thermalDiffusivity,
         CalcUpdateHandler? updateHandler, int updatePeriod)
     {
         if (numberIter < 0)
@@ -460,9 +576,9 @@ public class Mesh
         {
             throw new ArgumentOutOfRangeException(nameof(deltaTime), "deltaTime <= 0");
         }
-        if (!(courantNumber > 0.0))
+        if (!(thermalDiffusivity > 0.0))
         {
-            throw new ArgumentOutOfRangeException(nameof(courantNumber), "courantNumber <= 0");
+            throw new ArgumentOutOfRangeException(nameof(thermalDiffusivity), "thermalDiffusivity <= 0");
         }
         if (updatePeriod < 1)
         {
@@ -471,18 +587,18 @@ public class Mesh
 
         _stopRequested = false;
         _wasStopped = false;
-        ThermalDiffusivity = courantNumber * CellSize * CellSize / deltaTime;
+        ThermalDiffusivity = thermalDiffusivity;
         Time = 0.0;
         Iteration = 0;
+
+        var step = new CellStepContext(deltaTime, thermalDiffusivity, CellSizeX, CellSizeY, CellSizeZ);
 
         // Начальное состояние: вторые производные на гранях по начальным температурам
         UpdateFaces();
 
         updateHandler?.Invoke(this, 0, Time, 0.0);
 
-        double time = deltaTime;
-        double maxTime = deltaTime * numberIter;
-        while (time <= maxTime)
+        for (int iteration = 1; iteration <= numberIter; iteration++)
         {
             // Проверка запроса на остановку (кнопка «Остановить» в интерфейсе)
             if (_stopRequested)
@@ -492,25 +608,24 @@ public class Mesh
             }
 
             UpdateFaces();
-            double sumAbsDeltaT = UpdateCells(courantNumber);
+            double sumAbsDeltaT = UpdateCells(step, iteration - 1);
 
-            Time = time;
-            Iteration = (int)(time / deltaTime);
+            Time = iteration * deltaTime;
+            Iteration = iteration;
 
-            if (updateHandler != null && (Iteration % updatePeriod == 0 || Iteration == numberIter))
+            if (updateHandler != null && (iteration % updatePeriod == 0 || iteration == numberIter))
             {
                 updateHandler(this, Iteration, Time, sumAbsDeltaT);
             }
-
-            time += deltaTime;
         }
     }
 
     /// <summary>
-    /// Пересчёт (T_{i+1} - T_i) / h^2 на всех гранях по текущим температурам ячеек.
-    /// Каждая грань знает своих соседей (см. Face.UpdateSecDerT), поэтому достаточно
-    /// пройти по всем трём массивам граней; на внешних гранях куба недостающая температура
-    /// восстанавливается через граничное условие (фиктивная ячейка).
+    /// Пересчёт (T_{i+1} − T_i) / h² на всех гранях по текущим температурам ячеек
+    /// и текущему времени (для ГУ, зависящих от времени). Каждая грань знает своих
+    /// соседей (см. Face.UpdateSecDerT), поэтому достаточно пройти по всем трём
+    /// массивам граней; на внешних гранях куба недостающая температура восстанавливается
+    /// через граничное условие (фиктивная ячейка).
     /// </summary>
     private void UpdateFaces()
     {
@@ -524,23 +639,23 @@ public class Mesh
     {
         foreach (Face face in faces)
         {
-            face.UpdateSecDerT(CellSize);
+            face.UpdateSecDerT(Time, ThermalConductivity);
         }
     }
 
-    /// <summary>Обновление температур всех ячеек. Возвращает сумму модулей приращений, К.</summary>
-    private double UpdateCells(double courantNumber)
+    /// <summary>Обновление температур всех ячеек выбранным методом. Возвращает сумму модулей приращений, К.</summary>
+    private double UpdateCells(in CellStepContext step, int stepIndex)
     {
         double sumAbsDeltaT = 0.0;
         foreach (Cell cell in _cellList)
         {
-            sumAbsDeltaT += Math.Abs(cell.UpdateT(courantNumber, CellSize));
+            sumAbsDeltaT += Math.Abs(cell.UpdateT(step, stepIndex));
         }
         return sumAbsDeltaT;
     }
 
     /// <summary>Проверка, что двумерный массив совпадает по размерам с плоскостью сетки.</summary>
-    private static void CheckShape(double[,] plane, string name, int d0, int d1)
+    private static void CheckShape(BoundaryCondition[,] plane, string name, int d0, int d1)
     {
         if (plane == null)
         {
@@ -569,4 +684,3 @@ public class Mesh
         }
     }
 }
-

@@ -17,7 +17,8 @@ namespace ThermSliceViewer;
 /// </summary>
 /// <param name="Iterations">Сколько шагов по времени выполнить.</param>
 /// <param name="DeltaTime">Шаг по времени одной итерации, с.</param>
-/// <param name="CourantNumber">Число Куранта C = a·dt/h² (устойчиво при C ≤ 1/6).</param>
+/// <param name="CourantNumber">Число Куранта C = a·dt/h², h — наименьший шаг сетки
+/// (для равномерной сетки явная схема устойчива при C ≤ 1/6).</param>
 /// <param name="UpdatePeriod">Через сколько итераций обновлять интерфейс.</param>
 public sealed record CalcSettings(int Iterations, double DeltaTime, double CourantNumber, int UpdatePeriod);
 
@@ -32,8 +33,14 @@ public class MainWindow : Window
     // Размеры сетки — берутся из формы начального поля температур
     private readonly int _nx, _ny, _nz;
 
-    // Шаг сетки h, м: нужен для подписей и для коэффициента температуропроводности a
-    private readonly double _cellSize;
+    // Шаги сетки по осям [hx, hy, hz], м: нужны для подписей и коэффициента температуропроводности a
+    private readonly double[] _cellSizes;
+
+    // Наименьший шаг сетки, м: по нему определяется число Куранта C = a·dt/h²
+    private readonly double _hMin;
+
+    // Предел устойчивости явной схемы по введённому числу Куранта (равномерная сетка — 1/6)
+    private readonly double _stableCourant;
 
     // Текущие температуры ячеек — только для отрисовки среза
     private double[,,] _temps;
@@ -67,9 +74,6 @@ public class MainWindow : Window
     private double _lastCourant = 0.1;         // последнее число Куранта — для строки состояния
     private string _warning = string.Empty;    // предупреждение о неустойчивой схеме
 
-    /// <summary>Граница устойчивости явной 3D-схемы: C ≤ 1/6.</summary>
-    private const double StableCourant = 1.0 / 6.0;
-
     /// <summary>Пользователь нажал «Старт расчёта»; параметры уже проверены окном.</summary>
     public event EventHandler<CalcSettings>? StartRequested;
 
@@ -81,12 +85,12 @@ public class MainWindow : Window
 
     /// <summary>
     /// Окно создаётся по начальному полю температур (его форма задаёт размеры сетки)
-    /// и шагу сетки. Объект расчёта окну не передаётся: оно только рисует данные,
+    /// и шагам сетки по осям. Объект расчёта окну не передаётся: оно только рисует данные,
     /// которые приходят в методы ShowFrame / ShowReset / ShowFinished / ShowError.
     /// </summary>
     /// <param name="initialTemps">Начальные температуры ячеек [X, Y, Z], К.</param>
-    /// <param name="cellSize">Шаг сетки h, м.</param>
-    public MainWindow(double[,,] initialTemps, double cellSize)
+    /// <param name="cellSizes">Шаги сетки по осям [hx, hy, hz], м.</param>
+    public MainWindow(double[,,] initialTemps, double[] cellSizes)
     {
         Title = "Теплопередача: срезы сетки и сумма модулей изменений температуры";
         Width = 980;
@@ -96,13 +100,16 @@ public class MainWindow : Window
 
         // 1. Начальное поле температур: его форма задаёт размеры сетки
         ArgumentNullException.ThrowIfNull(initialTemps);
-        if (cellSize <= 0.0)
+        ArgumentNullException.ThrowIfNull(cellSizes);
+        if (cellSizes.Length != 3 || !(cellSizes[0] > 0.0) || !(cellSizes[1] > 0.0) || !(cellSizes[2] > 0.0))
         {
-            throw new ArgumentOutOfRangeException(nameof(cellSize), "шаг сетки должен быть > 0");
+            throw new ArgumentOutOfRangeException(nameof(cellSizes), "нужны три положительных шага сетки [hx, hy, hz], м");
         }
 
         _temps = initialTemps;
-        _cellSize = cellSize;
+        _cellSizes = cellSizes;
+        _hMin = Math.Min(cellSizes[0], Math.Min(cellSizes[1], cellSizes[2]));
+        _stableCourant = 0.5 / (_hMin * _hMin * SumInverseSquares(cellSizes));
         _nx = initialTemps.GetLength(0);
         _ny = initialTemps.GetLength(1);
         _nz = initialTemps.GetLength(2);
@@ -163,7 +170,9 @@ public class MainWindow : Window
         // 4. Панель параметров расчёта и график (снизу окна)
         _iterationsBox = MakeInputBox("200", 90, "Целое число итераций (шагов по времени)");
         _deltaTimeBox = MakeInputBox("1,0", 90, "Шаг по времени одной итерации, с (можно дробное: 0,5 или 0.5)");
-        _courantBox = MakeInputBox("0,15", 90, "Число Куранта C = a*dt/h^2. Для явной 3D-схемы устойчиво C <= 1/6");
+        _courantBox = MakeInputBox("0,15", 90, "Число Куранта C = a·dt/h², h — наименьший шаг сетки. "
+            + "Явная схема устойчива при C·h²·(1/hx² + 1/hy² + 1/hz²) ≤ 1/2 "
+            + "(равномерная сетка: C ≤ 1/6)");
         _updatePeriodBox = MakeInputBox("1", 70, "Через сколько итераций обновлять интерфейс (1 — каждую итерацию)");
 
         _startButton = new Button
@@ -277,7 +286,7 @@ public class MainWindow : Window
         // Отрисовка первого кадра
         UpdateSliceView();
         UpdateStatus($"Исходное состояние: {FormatTempRange(_colorMin, _colorMax)}, "
-            + $"ячеек {_nx}x{_ny}x{_nz}, h = {_cellSize * 1000:0.###} мм.");
+            + $"ячеек {_nx}x{_ny}x{_nz}, {FormatCellSizes()}.");
     }
 
     // ---------- Создание элементов оформления ----------
@@ -449,16 +458,17 @@ public class MainWindow : Window
         SetRunning(true);
         _chart.Clear();
         _lastCourant = settings.CourantNumber;
-        _warning = settings.CourantNumber > StableCourant
-            ? "  Внимание: C > 1/6 — явная схема может оказаться неустойчивой."
+        _warning = settings.CourantNumber > _stableCourant
+            ? $"  Внимание: C > {_stableCourant:0.####} — явная схема может оказаться неустойчивой."
             : string.Empty;
 
-        // Коэффициент температуропроводности: a = C·h²/dt (ядро считает его так же)
-        double diffusivity = settings.CourantNumber * _cellSize * _cellSize / settings.DeltaTime;
+        // Коэффициент температуропроводности: a = C·h²/dt, h — наименьший шаг сетки
+        // (то же преобразование делает Program.cs перед вызовом Mesh.StartCalc)
+        double diffusivity = settings.CourantNumber * _hMin * _hMin / settings.DeltaTime;
 
         UpdateStatus($"Расчёт: {settings.Iterations} итераций, dt = {settings.DeltaTime:0.####} с, "
             + $"C = {settings.CourantNumber:0.####}, a = {diffusivity:0.###E+0} м^2/с, "
-            + $"h = {_cellSize * 1000:0.###} мм, обновление интерфейса каждые "
+            + $"{FormatCellSizes()}, обновление интерфейса каждые "
             + $"{settings.UpdatePeriod} итер.{_warning}");
 
         StartRequested?.Invoke(this, settings);
@@ -607,6 +617,21 @@ public class MainWindow : Window
     }
 
     // ---------- Форматирование чисел для вывода ----------
+
+    /// <summary>Шаги сетки по осям в миллиметрах: «h = 1×2×1 мм».</summary>
+    private string FormatCellSizes() =>
+        $"h = {_cellSizes[0] * 1000:0.###}×{_cellSizes[1] * 1000:0.###}×{_cellSizes[2] * 1000:0.###} мм";
+
+    /// <summary>Сумма обратных квадратов шагов сетки (критерий устойчивости явной схемы).</summary>
+    private static double SumInverseSquares(double[] cellSizes)
+    {
+        double sum = 0.0;
+        foreach (double h in cellSizes)
+        {
+            sum += 1.0 / (h * h);
+        }
+        return sum;
+    }
 
     /// <summary>
     /// Температура с числом знаков после запятой, подобранным по ширине диапазона:

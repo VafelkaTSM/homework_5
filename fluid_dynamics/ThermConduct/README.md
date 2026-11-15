@@ -1,16 +1,14 @@
-# ThermConduct — нестационарная теплопроводность в кубе (3D, явная схема)
+# ThermConduct — нестационарная теплопроводность в параллелепипеде (3D)
 
-Учебный проект: расчёт распределения температуры в параллелепипеде (кубе) из `X × Y × Z`
-ячеек и визуализация результата в окне AvaloniaUI — срез куба по выбранной оси и график
+Учебный проект: расчёт распределения температуры в параллелепипеде из `X × Y × Z`
+ячеек и визуализация результата в окне AvaloniaUI — срез по выбранной оси и график
 суммы модулей изменений температуры `Σ|ΔT|` по итерациям.
 
-Расчётное ядро работает с простыми многомерными массивами `double`, а условия эксперимента
-задаются в двух JSON-файлах (загрузчик — `MeshConditions.cs`):
-
-* начальные условия — `initial_conditions.json`: `double[X, Y, Z]` (своя температура у каждой
-  ячейки) либо одно число — **равномерное поле** (вариант по умолчанию);
-* граничные условия — `boundary_conditions.json`: по одному массиву `double[,]` на каждую из
-  шести граней куба (или одно число на всю грань), **только числа, не функции времени**.
+Все условия эксперимента задаются **одним** JSON-файлом `conditions.json` (загрузчик —
+`MeshConditions.cs`): сетка (число ячеек и линейные размеры в метрах), метод расчёта,
+начальное поле и граничные условия **1–3-го рода** — константами или функциями.
+Сами функции и методы хранятся в словарях `ThermalFunctions.cs` и в JSON передаются
+**по ключу** — чтобы добавить свою функцию, достаточно дописать её в словарь.
 
 ---
 
@@ -22,81 +20,86 @@
 ∂T/∂t = a · (∂²T/∂x² + ∂²T/∂y² + ∂²T/∂z²)
 ```
 
-где `a` — коэффициент температуропроводности, м²/с (`a = C · h² / Δt`, см. ниже).
+где `a` — коэффициент температуропроводности, м²/с.
 
 ### Сетка
 
 | Объект | Что это | Размер массива |
 |---|---|---|
 | `Cell` | центр ячейки, хранит температуру `T` | `[X, Y, Z]` |
-| `Face` по X | плоскость между ячейками `x-1` и `x` | `[X+1, Y, Z]` |
-| `Face` по Y | плоскость между ячейками `y-1` и `y` | `[X, Y+1, Z]` |
-| `Face` по Z | плоскость между ячейками `z-1` и `z` | `[X, Y, Z+1]` |
+| `Face` по X | плоскость между ячейками `x−1` и `x` | `[X+1, Y, Z]` |
+| `Face` по Y | плоскость между ячейками `y−1` и `y` | `[X, Y+1, Z]` |
+| `Face` по Z | плоскость между ячейками `z−1` и `z` | `[X, Y, Z+1]` |
 
-Расстояние между центрами соседних ячеек одинаково по всем осям: `h` (`Mesh.CellSize`,
-по умолчанию `0.001` м).
+Число ячеек по каждой оси и линейные размеры задаются в `conditions.json`
+(`grid.cells` и `grid.size` в метрах, либо сразу `grid.cellSize`). Шаги сетки
+по осям `hx, hy, hz` могут различаться; грань хранит шаг своей оси.
 
 ### Вторая производная на грани
 
 Из физических величин грань хранит **только** вторую производную температуры по нормали:
 
 ```
-SecDerT = (T_{i+1} − T_i) / h²        // К/м²
+SecDerT = (T_{i+1} − T_i) / h²        // h — шаг сетки по оси грани, К/м²
 ```
 
 Для внутренней грани — это просто разность температур двух соседних ячеек.
 
-### Явная схема (FTCS)
+### Шаг по времени
 
-Ячейка за один шаг по времени получает приращение
+Температура каждой ячейки за один шаг пересчитывается методом подсчёта теплопередачи —
+делегатом `CellUpdateDelegate` из словаря `ThermalFunctions.CellUpdateMethods`
+(ключ задаётся в conditions.json, делегат копируется в каждую ячейку):
+
+* **"explicit"** — явная схема FTCS (одношаговая):
 
 ```
-ΔT = C · h² · [ (SecDerT_x_next − SecDerT_x_past)
-              + (SecDerT_y_next − SecDerT_y_past)
-              + (SecDerT_z_next − SecDerT_z_past) ]
+ΔT = a·Δt · [ (SecDerT_x_next − SecDerT_x_past)
+            + (SecDerT_y_next − SecDerT_y_past)
+            + (SecDerT_z_next − SecDerT_z_past) ]
 
 T_new = T + ΔT
 ```
 
-где число Куранта `C = a · Δt / h²`. Условие устойчивости явной 3D-схемы: `C ≤ 1/6`
-(интерфейс предупреждает, но не блокирует расчёт).
+Условие устойчивости: `a·Δt·(1/hx² + 1/hy² + 1/hz²) ≤ 1/2` (равномерная сетка —
+число Куранта `C = a·Δt/h² ≤ 1/6`; интерфейс предупреждает, но не блокирует расчёт).
 
-### Граничные условия (1-го рода, Дирихле, постоянные)
+* **"dufort-frankel"** — трёхслойная явная схема Дюфорта–Франкела: устойчива при любом
+  шаге по времени (в обмен на точность); использует `Cell.PrevTemp`, первый шаг каждого
+  расчёта — разгонный явный.
 
-На внешней грани куба задана температура `T_b` — число из массива граничных условий.
-Недостающая температура за границей («фиктивная» ячейка) восстанавливается как
-`T_ghost = 2·T_b − T_cell`, что даёт для грани со стороны `x = min`:
+### Граничные условия 1–3-го рода
+
+На внешней грани куба задано граничное условие — объект `BoundaryCondition`
+(вид + одна или две функции времени). Все три вида сводятся к **температуре стенки**
+`T_стенки`, после чего недостающая температура за границей («фиктивная» ячейка-зеркало)
+восстанавливается как `T_ghost = 2·T_стенки − T_cell`:
+
+| Вид | Задаётся | Температура стенки |
+|---|---|---|
+| 1-й род (Дирихле) | температура стенки, К | `T_стенки = T_заданная(t)` |
+| 2-й род (Нейман) | тепловой поток в тело `q`, Вт/м² | `T_стенки = T_cell + q·h/(2λ)` |
+| 3-й род (Робин) | среда: `T_среды`, К, и `α`, Вт/(м²·К) | `α(T_среды − T_стенки) = 2λ(T_стенки − T_cell)/h` |
+
+Для грани со стороны `x = min` это даёт `SecDerT = 2·(T_cell − T_стенки)/h²`,
+для грани со стороны `x = max` — `SecDerT = 2·(T_стенки − T_cell)/h²`.
+
+Пределы 3-го рода: `α → ∞` вырождается в 1-й род (`T_стенки → T_среды`),
+`α = 0` — в нулевой поток. Значения могут быть константами **или функциями времени**
+(по ключу из словаря), заданными на всю грань **или у каждой ячейки грани**.
+
+**Откуда множитель 2 и формулы стенки.** Ячейка — это центр, отстоящий от стенки на
+`h/2`, а `SecDerT` по определению делится на `h²` (полный шаг). Поэтому разность
+температур «центр ↔ стенка» делится на реальное расстояние `h/2`, а не на `h`:
 
 ```
-SecDerT = (T_cell − T_ghost) / h² = 2 · (T_cell − T_b) / h²
+SecDerT = (T_cell − T_стенки) / (h/2) / h = 2·(T_cell − T_стенки) / h²
 ```
 
-и для грани со стороны `x = max`:
-
-```
-SecDerT = 2 · (T_b − T_cell) / h²
-```
-
-Такая аппроксимация — первого порядка точности по `h`, но линейное поле она воспроизводит
-точно (см. п. 2 раздела 8).
-
-**Откуда множитель 2.** Ячейка — это центр, отстоящий от стенки на `h/2`, а `SecDerT` по
-определению делится на `h²` (полный шаг). Поэтому разность температур «центр ↔ стенка»
-надо делить на реальное расстояние `h/2`, а не на `h`:
-
-```
-SecDerT = (T_cell − T_b) / (h/2) / h = 2 · (T_cell − T_b) / h²
-```
-
+Для 2-го рода тот же скачок температуры даёт поток: `q = 2λ(T_стенки − T_cell)/h`.
 То же самое в терминах фиктивной ячейки: `T_ghost` ставится в точку-зеркало `x = −h/2`,
-и линейная интерполяция по стенке даёт `T_ghost = 2·T_b − T_cell`.
-
-Если же считать `T_b` температурой в центре фиктивной ячейки, отстоящей от центра краевой
-ячейки на целый `h` (то есть писать `SecDerT = (T_cell − T_b)/h²` без двойки), то условие
-`T = T_b` окажется привязано не к стенке, а к точке на `h/2` снаружи куба: температура самой
-стенки получится `(T_cell + T_b)/2`, тепловой поток через стенку — вдвое меньше, а всё поле
-сдвинется на пол-ячейки. Формально такая схема тоже сходится (ошибка `≈ (h/2)·∂T/∂x`,
-см. п. 2 раздела 8), но при том же `h` она вдвое хуже у стенки и не даёт правильного потока.
+и линейная интерполяция по стенке даёт `T_ghost = 2·T_стенки − T_cell`.
+Аппроксимация первого порядка по `h`, но линейное поле воспроизводит точно.
 
 ---
 
@@ -114,8 +117,8 @@ dotnet run
 ```
 
 В репозиторий не попадают каталоги `obj/` и `bin/` (см. `.gitignore`).
-Условия эксперимента задаются в `initial_conditions.json` и `boundary_conditions.json`
-(они копируются рядом с исполняемым файлом при сборке, см. `ThermConduct.csproj`).
+Условия эксперимента задаются в `conditions.json` (файл копируется рядом с исполняемым
+файлом при сборке, см. `ThermConduct.csproj`).
 
 ---
 
@@ -123,13 +126,14 @@ dotnet run
 
 | Файл | Строк | Назначение |
 |---|---:|---|
-| `Program.cs` | 97 | точка входа: условия из JSON → объект сетки → окно → запуск расчёта с делегатом в интерфейс |
-| `MeshConditions.cs` | 400 | чтение `initial_conditions.json` и `boundary_conditions.json`, `CreateMesh()` (namespace `Program`) |
-| `ThermConductSim.cs` | 572 | расчётное ядро: `Cell`, `Face`, `Mesh`, `CalcUpdateHandler` (namespace `ThermConductSim`) |
-| `ThermSliceViewer.cs` | 956 | только интерфейс: `MainWindow`, `SumDeltaChart`, `App`, `CalcSettings` (namespace `ThermSliceViewer`) |
-| `initial_conditions.json` | 21 | начальные условия: `shape`, `cellSize`, `temperature` (равномерное поле) или `cells` |
-| `boundary_conditions.json` | 16 | граничные условия шести граней: число или двумерный массив |
-| `ThermConduct.csproj` | — | целевая платформа, ссылки на Avalonia, копирование JSON в каталог сборки |
+| `Program.cs` | 103 | точка входа: условия из conditions.json → объект сетки → окно → запуск расчёта с делегатом в интерфейс |
+| `MeshConditions.cs` | 684 | чтение conditions.json (сетка, метод, начальные и граничные условия), `CreateMesh()` (namespace `Program`) |
+| `ThermConductSim.cs` | 686 | расчётное ядро: `Cell`, `Face`, `Mesh`, `BoundaryKind`+`BoundaryCondition` рядом, делегаты, `CellStepContext` (namespace `ThermConductSim`) |
+| `ThermalFunctions.cs` | 156 | библиотека функций и методов: словари `BoundaryConditions`, `InitialTemperatures`, `CellUpdateMethods` — вызов по ключу (namespace `ThermConductSim`) |
+| `BoundaryCondition.cs` | 103 | ГУ 1–3-го рода: вид, функции времени, температура стенки (namespace `ThermConductSim`) |
+| `ThermSliceViewer.cs` | 981 | только интерфейс: `MainWindow`, `SumDeltaChart`, `App`, `CalcSettings` (namespace `ThermSliceViewer`) |
+| `conditions.json` | 84 | единый файл условий: сетка, метод, начальное поле, граничные условия |
+| `ThermConduct.csproj` | — | целевая платформа, ссылки на Avalonia, копирование conditions.json в каталог сборки |
 
 Зависимость односторонняя: `Program` → {`ThermConductSim`, `ThermSliceViewer`},
 `ThermConductSim` ничего не знает про UI (связь только через делегат `CalcUpdateHandler`),
@@ -139,50 +143,76 @@ dotnet run
 
 ## 4. Расчётное ядро — `namespace ThermConductSim`
 
-### 4.1 `Cell` — ячейка сетки
+### 4.1 Функции и методы — `ThermalFunctions`
 
-Хранит **только** свою температуру и шесть ограничивающих её граней; никаких
-коэффициентов внутрь ячейки не копируется — `C`, `h`, `Δt` передаются в методы.
+Все функции условий эксперимента хранятся в словарях и вызываются (копируются)
+по строковому ключу, который задаётся в `conditions.json`:
+
+| Словарь | Тип значения | Ключ в json | Назначение |
+|---|---|---|---|
+| `BoundaryConditions` | `Func<double, double>` | поля ГУ | значение ГУ от времени, с: температура стенки/среды, К, поток, Вт/м², α, Вт/(м²·К) |
+| `InitialTemperatures` | `InitialTemperatureDelegate` | `initial.function` | начальная температура `T(x, y, z)` от координат центра ячейки, м |
+| `CellUpdateMethods` | `CellUpdateDelegate` | `method` | метод подсчёта теплопередачи: один шаг по времени для ячейки |
+
+Неизвестный ключ — `InvalidDataException` со списком доступных ключей. Константное ГУ —
+частный случай: функция, возвращающая одно число (загрузчик оборачивает сам).
+
+Делегаты (в `ThermConductSim.cs`):
+
+```csharp
+public delegate double CellUpdateDelegate(Cell cell, in CellStepContext step, int stepIndex);
+public delegate double InitialTemperatureDelegate(double x, double y, double z);
+```
+
+`CellStepContext` — параметры шага (Δt, a, hx, hy, hz, свойство `ADt = a·Δt`),
+передаётся в горячем цикле по ссылке (`in`).
+
+### 4.2 `BoundaryCondition` — граничное условие (файл `BoundaryCondition.cs`)
+
+| Член | Назначение |
+|---|---|
+| `Kind` | вид: `BoundaryKind.Dirichlet` (1), `Neumann` (2), `Robin` (3) |
+| `Dirichlet(Func<double,double>)` | 1-й род: температура стенки, К |
+| `Neumann(Func<double,double>)` | 2-й род: тепловой поток в тело, Вт/м² |
+| `Robin(Func<double,double>, Func<double,double>)` | 3-й род: температура среды, К, и α, Вт/(м²·К) |
+| `WallTemperature(cellTemp, time, lambda, h)` | температура стенки по текущему состоянию (формулы — в п. 1); её ядро кладёт в фиктивную ячейку-зеркало |
+
+Значения — функции времени (константа — вырожденный случай). Один экземпляр может
+обслуживать всю грань (равномерное ГУ), а может — одну ячейку грани (поэлементная
+плоскость, см. `MeshConditions.ReadSpecPlane`).
+
+### 4.3 `Cell` — ячейка сетки
+
+Хранит **только** свою температуру, температуру с предыдущего шага (для
+многошаговых методов) и шесть ограничивающих её граней; `C`, `h`, `Δt` внутрь не
+копируются — методам они передаются через `CellStepContext`.
 
 | Член | Тип | Назначение |
 |---|---|---|
 | `Temp` | `public double` | температура в центре ячейки, К |
+| `PrevTemp` | `public double` | температура с предыдущего шага, К (Дюфорт–Франкел) |
+| `UpdateMethod` | `public CellUpdateDelegate { get; set; }` | **копия метода подсчёта теплопередачи из словаря по ключу из json**; сетка присваивает её каждой ячейке |
 | `XPast` | `public Face { get; internal set; }` | грань со стороны −X; у ячейки `x = 0` — внешняя грань куба |
 | `XNext` | `public Face { get; internal set; }` | грань со стороны +X; у ячейки `x = X−1` — внешняя |
 | `YPast`, `YNext` | `public Face { get; internal set; }` | то же по оси Y |
 | `ZPast`, `ZNext` | `public Face { get; internal set; }` | то же по оси Z |
 | `Cell(double temp = 0.0)` | конструктор | создаёт ячейку с температурой; грани вписывает сетка |
-| `UpdateT(double courantNumber, double cellSize)` | `public double` | один явный шаг по времени; возвращает приращение `ΔT` |
+| `UpdateT(in CellStepContext, int stepIndex)` | `public double` | один шаг по времени через делегат `UpdateMethod`; возвращает приращение `ΔT` |
 
 Грани — **отдельные поля, а не массив** (та же логика, что `Face.PastCell`/`Face.NextCell`):
 
 * ссылки лежат прямо в объекте ячейки, поэтому нет ни второго объекта `Face[6]`, ни его
-  заголовка: на `32³` это на **2,5 МБ и 32 768 объектов меньше** (измерено: `Cell` ≈ 80 Б
-  против ≈ 160 Б с массивом граней);
-* в горячем цикле `UpdateT` обращение к грани — прямая загрузка поля по фиксированному
+  заголовка: на `32³` это на **2,5 МБ и 32 768 объектов меньше**, чем с массивом граней
+  (измерено при первой версии; с тех пор у `Cell` добавились только `PrevTemp` и ссылка
+  на метод расчёта);
+* в горячем цикле обращение к грани — прямая загрузка поля по фиксированному
   смещению: не нужно вычислять индекс `2*axis + …` и проверять границу массива;
 * имена полей несут смысл («past»/«next» и ось), а не индекс — перепутать грань сложно;
 * `internal set` — записывать грани может только ядро (`Mesh.CreateFaces`), снаружи набор
-  граней неизменяем. Ячейка остаётся «глупой»: она только читает `SecDerT` своих граней.
+  граней неизменяем. Ячейка остаётся «глупой»: она только читает `SecDerT` своих граней
+  и отдаёт себя делегату `UpdateMethod`.
 
-Ячейка создаётся раньше граней (грань ссылается на соседние ячейки), поэтому шесть полей
-заполняет `Mesh.CreateFaces` уже после создания ячеек.
-
-```csharp
-public double UpdateT(double courantNumber, double cellSize)
-{
-    // «next» — грань со стороны +нормали, «past» — со стороны −нормали
-    double sumSecDer = (XNext.SecDerT - XPast.SecDerT)
-                     + (YNext.SecDerT - YPast.SecDerT)
-                     + (ZNext.SecDerT - ZPast.SecDerT);
-
-    double deltaTemp = courantNumber * cellSize * cellSize * sumSecDer;
-    Temp += deltaTemp;
-    return deltaTemp;
-}
-```
-
-### 4.2 `Face` — грань между двумя центрами ячеек
+### 4.4 `Face` — грань между двумя центрами ячеек
 
 Грань — общая для двух соседних ячеек, поэтому она хранит **ссылки на них** и сама
 пересчитывает вторую производную температуры по нормали.
@@ -191,44 +221,38 @@ public double UpdateT(double courantNumber, double cellSize)
 |---|---|---|
 | `PastCell` | `public readonly Cell?` | ячейка со стороны «past» (−нормаль); `null` у внешней грани `{x, y, z} = min` |
 | `NextCell` | `public readonly Cell?` | ячейка со стороны «next» (+нормаль); `null` у внешней грани `{x, y, z} = max` |
-| `BoundaryTemp` | `public readonly double` | температура грани из ГУ, К; осмысленна только на внешних гранях (у внутренних `0`) |
+| `Boundary` | `public readonly BoundaryCondition?` | ГУ внешней грани (1–3-го рода, возможно зависящее от времени); `null` у внутренних |
 | `SecDerT` | `public double` | `(T_{i+1} − T_i) / h²` вдоль нормали грани, К/м² |
-| `IsBoundary` | `public bool { get; }` | `true`, если одной из соседних ячеек нет (работает ГУ) |
+| `IsBoundary` | `public bool { get; }` | `true`, если грань внешняя (работает ГУ) |
+| `Face(Cell, Cell, double cellSize)` | конструктор | внутренняя грань; `Boundary` = null |
+| `Face(Cell?, Cell?, BoundaryCondition?, double cellSize)` | конструктор | грань с ГУ; `ArgumentException`, если ячеек нет вовсе |
+| `UpdateSecDerT(double time, double lambda)` | метод | пересчёт `SecDerT` по текущим температурам, времени (для ГУ-функций) и λ |
 
-| Конструктор | Назначение |
-|---|---|
-| `Face(Cell pastCell, Cell nextCell)` | внутренняя грань между двумя ячейками; `BoundaryTemp` = 0 |
-| `Face(Cell? pastCell, Cell? nextCell, double boundaryTemp)` | грань с ГУ: одна из ячеек `null`, вместо её температуры берётся `boundaryTemp`; `ArgumentException`, если `null` обе |
-
-| Метод | Что делает |
-|---|---|
-| `void UpdateSecDerT(double cellSize)` | пересчитывает `SecDerT` по текущим температурам соседних ячеек; `ArgumentOutOfRangeException` при `cellSize <= 0` |
+Грань хранит шаг сетки **своей оси** (`cellSize` в конструкторе) — шаги по осям
+могут различаться.
 
 ```csharp
-public void UpdateSecDerT(double cellSize)
+public void UpdateSecDerT(double time, double thermalConductivity)
 {
-    double h2 = cellSize * cellSize;
+    double h2 = _cellSize * _cellSize;
 
     if (PastCell != null && NextCell != null)
     {
         SecDerT = (NextCell.Temp - PastCell.Temp) / h2;             // внутренняя грань
+        return;
     }
-    else if (PastCell != null)
-    {
-        SecDerT = 2.0 * (BoundaryTemp - PastCell.Temp) / h2;        // внешняя грань max
-    }
+
+    Cell cell = (PastCell ?? NextCell)!;
+    double wallTemp = Boundary!.WallTemperature(cell.Temp, time, thermalConductivity, _cellSize);
+
+    if (PastCell != null)
+        SecDerT = 2.0 * (wallTemp - cell.Temp) / h2;                // внешняя грань max
     else
-    {
-        SecDerT = 2.0 * (NextCell!.Temp - BoundaryTemp) / h2;       // внешняя грань min
-    }
+        SecDerT = 2.0 * (cell.Temp - wallTemp) / h2;                // внешняя грань min
 }
 ```
 
-Грань не знает `h` (шаг передаётся аргументом), не хранит «направление» (`End`) и не
-содержит функции граничного условия — только число в `BoundaryTemp`. Множитель 2 на
-внешних гранях — учёт расстояния `h/2` до стенки (см. п. 1).
-
-### 4.3 `CalcUpdateHandler` — делегат обратного вызова
+### 4.5 `CalcUpdateHandler` — делегат обратного вызова
 
 ```csharp
 public delegate void CalcUpdateHandler(Mesh mesh, int iteration, double time, double sumAbsDeltaT);
@@ -237,17 +261,21 @@ public delegate void CalcUpdateHandler(Mesh mesh, int iteration, double time, do
 Вызывается **на том потоке, где идёт расчёт**, поэтому в обработчике нужно сделать копию
 данных (`mesh.TempSnapshot()`) и передать её в UI-поток (`Dispatcher.UIThread.Post`).
 
-### 4.4 `Mesh` — куб из ячеек и граней
+### 4.6 `Mesh` — параллелепипед из ячеек и граней
 
 #### Поля и свойства
 
 | Член | Тип | Назначение |
 |---|---|---|
-| `DefaultCellSize` | `const double = 0.001` | шаг сетки `h` по умолчанию, м |
-| `CellSize` | `double { get; }` | шаг сетки `h`, м |
+| `DefaultCellSize` | `const double = 0.001` | шаг сетки по умолчанию, м |
+| `DefaultThermalConductivity` | `const double = 45.0` | λ по умолчанию, Вт/(м·К) |
+| `CellSizeX`, `CellSizeY`, `CellSizeZ` | `double { get; }` | шаги сетки по осям, м |
+| `MinCellSize` | `double { get; }` | наименьший шаг (для числа Куранта) |
+| `CellSizes` | `double[] { get; }` | `[hx, hy, hz]`, м (копия) |
+| `ThermalConductivity` | `double { get; }` | λ, Вт/(м·К) — для ГУ 2-го и 3-го рода |
 | `Time` | `double { get; private set; }` | текущее время расчёта, с |
 | `Iteration` | `int { get; private set; }` | номер последней выполненной итерации |
-| `ThermalDiffusivity` | `double { get; private set; }` | `a = C · h² / Δt` последнего расчёта, м²/с |
+| `ThermalDiffusivity` | `double { get; private set; }` | `a` последнего расчёта, м²/с |
 | `WasStopped` | `bool { get; }` | последний расчёт был прерван вызовом `StopCalc()` |
 | `_nx, _ny, _nz` | `int` | размеры сетки по осям |
 | `_cellList` | `Cell[X, Y, Z]` | все ячейки |
@@ -261,97 +289,103 @@ public delegate void CalcUpdateHandler(Mesh mesh, int iteration, double time, do
 
 ```csharp
 public Mesh(double[,,] initTemp,
-            double[,] xPast, double[,] xNext,
-            double[,] yPast, double[,] yNext,
-            double[,] zPast, double[,] zNext,
-            double cellSize = DefaultCellSize)
+            BoundaryCondition[,] xPast, BoundaryCondition[,] xNext,
+            BoundaryCondition[,] yPast, BoundaryCondition[,] yNext,
+            BoundaryCondition[,] zPast, BoundaryCondition[,] zNext,
+            double cellSizeX, double cellSizeY, double cellSizeZ,
+            CellUpdateDelegate updateMethod,
+            double thermalConductivity = DefaultThermalConductivity)
 ```
 
 | Параметр | Размерность | Смысл |
 |---|---|---|
 | `initTemp` | `[X, Y, Z]` | начальная температура каждой ячейки, К |
-| `xPast` | `[Y, Z]` | ГУ на грани `x = min` |
-| `xNext` | `[Y, Z]` | ГУ на грани `x = max` |
-| `yPast` | `[X, Z]` | ГУ на грани `y = min` |
-| `yNext` | `[X, Z]` | ГУ на грани `y = max` |
-| `zPast` | `[X, Y]` | ГУ на грани `z = min` |
-| `zNext` | `[X, Y]` | ГУ на грани `z = max` |
-| `cellSize` | — | шаг сетки `h`, м; должен быть `> 0` |
+| `xPast` | `[Y, Z]` | ГУ грани `x = min` (у каждой ячейки плоскости — свой экземпляр) |
+| `xNext` | `[Y, Z]` | ГУ грани `x = max` |
+| `yPast` | `[X, Z]` | ГУ грани `y = min` |
+| `yNext` | `[X, Z]` | ГУ грани `y = max` |
+| `zPast` | `[X, Y]` | ГУ грани `z = min` |
+| `zNext` | `[X, Y]` | ГУ грани `z = max` |
+| `cellSizeX/Y/Z` | — | шаги сетки по осям, м; должны быть `> 0` |
+| `updateMethod` | — | метод подсчёта теплопередачи: **копируется в каждую ячейку** |
+| `thermalConductivity` | — | λ, Вт/(м·К); должна быть `> 0` |
 
-Размеры сетки берутся из `initTemp`, размерности всех шести массивов ГУ проверяются.
-Исключения: `ArgumentNullException` (массив `null`), `ArgumentOutOfRangeException`
-(пустая сетка, `cellSize <= 0`), `ArgumentException` (несовпадение размерности).
+Размеры сетки берутся из `initTemp`, размерности всех шести плоскостей ГУ проверяются.
+Исключения: `ArgumentNullException` (массив/делегат `null`),
+`ArgumentOutOfRangeException` (пустая сетка, неположительные шаги или λ),
+`ArgumentException` (несовпадение размерности).
 
 Внутри конструктор делает две вещи (именно в таком порядке):
 
-1. создаёт ячейки (`CreateCells`) — только температура; поля под шесть граней пока пустые;
+1. создаёт ячейки (`CreateCells`) — температура и копия `updateMethod` в каждую ячейку;
 2. создаёт грани (`CreateFaces`) — каждая грань получает ссылки на соседние ячейки
-   (у шести внешних плоскостей одна из ссылок `null`, а вместо неё стоит `BoundaryTemp`
-   из массивов ГУ) и записывается в поля `XNext`/`XPast`, `YNext`/`YPast` или
-   `ZNext`/`ZPast` обеих ячеек.
+   (у шести внешних плоскостей одна из ссылок `null`, а вместо неё — `BoundaryCondition`
+   из соответствующей плоскости) и записывается в поля `XNext`/`XPast`, `YNext`/`YPast`
+   или `ZNext`/`ZPast` обеих ячеек.
 
 Порядок важен: грань ссылается на ячейки, поэтому ячейки создаются первыми.
-
-Значения `SecDerT` до первого `StartCalc()` не нужны: они пересчитываются в начале расчёта
-и затем на каждой итерации.
+Значения `SecDerT` до первого `StartCalc()` не нужны: они пересчитываются в начале
+расчёта и затем на каждой итерации.
 
 #### Публичные методы
 
 | Метод | Что делает |
 |---|---|
 | `int[] Shape()` | размеры сетки `{X, Y, Z}` (новый массив — можно менять свободно) |
-| `void SetTemps(double[,,] temp)` | присвоить новые температуры всем ячейкам (кнопка «Сброс»); размерность проверяется, ГУ не меняются |
+| `void SetTemps(double[,,] temp)` | присвоить новые температуры всем ячейкам (кнопка «Сброс»); размерность проверяется, `PrevTemp` синхронизируется, ГУ не меняются |
 | `double[,,] TempSnapshot()` | копия температур всех ячеек — безопасно передавать в другой поток |
-| `void StartCalc(int numberIter, double deltaTime, double courantNumber, CalcUpdateHandler? updateHandler, int updatePeriod)` | выполнить расчёт (см. 4.6); `updateHandler` может быть `null` |
+| `void StartCalc(int numberIter, double deltaTime, double thermalDiffusivity, CalcUpdateHandler? updateHandler, int updatePeriod)` | выполнить расчёт (см. 4.7); `updateHandler` может быть `null` |
 | `void StopCalc()` | попросить остановиться; безопасно из другого потока (кнопка «Остановить») |
 
-`StartCalc` проверяет аргументы: `numberIter >= 0`, `deltaTime > 0`, `courantNumber > 0`
-(иначе `ArgumentOutOfRangeException`), `updatePeriod < 1` молча заменяется на `1`.
+`StartCalc` проверяет аргументы: `numberIter >= 0`, `deltaTime > 0`,
+`thermalDiffusivity > 0` (иначе `ArgumentOutOfRangeException`),
+`updatePeriod < 1` молча заменяется на `1`.
 
 #### Приватные методы
 
 | Метод | Что делает |
 |---|---|
-| `CreateCells(double[,,] initTemp)` | создаёт ячейки — только температура; грани вписывает `CreateFaces` |
-| `CreateFaces(xPast, xNext, yPast, yNext, zPast, zNext)` | создаёт грани со ссылками на соседние ячейки; у внешних плоскостей вместо одной из ячеек — `BoundaryTemp` |
-| `CreateFace(pastCell, nextCell, boundaryTemp, axis)` | создаёт одну грань и присваивает её в поля ячеек по оси: `pastCell.XNext`/`YNext`/`ZNext` и `nextCell.XPast`/`YPast`/`ZPast` |
-| `UpdateFaces()` | пересчитывает `SecDerT` на всех гранях: обходит три массива граней и вызывает `Face.UpdateSecDerT(h)` |
-| `UpdateCells(double courantNumber)` | вызывает `Cell.UpdateT` у всех ячеек, возвращает `Σ|ΔT|` |
-| `CheckShape(double[,] …)` / `CheckShape(double[,,] …)` | проверка размерности массивов ГУ и температур |
+| `CreateCells(initTemp, updateMethod)` | создаёт ячейки — температура и копия метода расчёта |
+| `CreateFaces(xPast, …, zNext)` | создаёт грани со ссылками на соседние ячейки; у внешних плоскостей вместо одной из ячеек — ГУ |
+| `CreateFace(pastCell, nextCell, boundary, cellSize, axis)` | создаёт одну грань и присваивает её в поля ячеек по оси |
+| `UpdateFaces()` | пересчитывает `SecDerT` на всех гранях по текущему времени и λ |
+| `UpdateCells(in step, stepIndex)` | вызывает `Cell.UpdateT` у всех ячеек, возвращает `Σ|ΔT|` |
+| `CheckShape(BoundaryCondition[,] …)` / `CheckShape(double[,,] …)` | проверка размерности плоскостей ГУ и температур |
 
-### 4.5 Индексация: какая грань какой ячейке принадлежит
+### 4.7 Индексация: какая грань какой ячейке принадлежит
 
-* `_faceXList[x, y, z]` — плоскость **между** ячейками `x-1` и `x`; `_faceXList[0, …]` —
+* `_faceXList[x, y, z]` — плоскость **между** ячейками `x−1` и `x`; `_faceXList[0, …]` —
   внешняя грань `x = min`, `_faceXList[X, …]` — внешняя грань `x = max` (аналогично Y и Z);
-* внутри сетки `SecDerT = (T[x, y, z] − T[x−1, y, z]) / h²`;
+* внутри сетки `SecDerT = (T[x, y, z] − T[x−1, y, z]) / hx²`;
 * ячейка `(x, y, z)` держит шесть ссылок на эти плоскости:
   `XPast = FaceX[x]`, `XNext = FaceX[x+1]`, `YPast = FaceY[y]`, `YNext = FaceY[y+1]`,
   `ZPast = FaceZ[z]`, `ZNext = FaceZ[z+1]`;
-* поэтому `XNext.SecDerT − XPast.SecDerT = (T_{i+1} − 2T_i + T_{i−1}) / h²` —
-  обычная трёхточечная аппроксимация второй производной (то же по Y и Z);
+* поэтому `XNext.SecDerT − XPast.SecDerT = (T_{i+1} − 2T_i + T_{i−1}) / hx²` —
+  обычная трёхточечная аппроксимация второй производной (то же по Y и Z со своими h);
 * грань — **общий объект** для двух ячеек: одна и та же `Face` лежит в `Next`-поле
   «past»-ячейки и в `Past`-поле «next»-ячейки (это делает `Mesh.CreateFace`), поэтому
   `SecDerT` считается один раз на итерацию и обе ячейки видят одно и то же значение;
 * у внешней грани одна из ссылок `Face.PastCell` / `Face.NextCell` равна `null`, и вторая
-  производная считается по граничному условию: `SecDerT = 2·(T_boundary − T_cell) / h²`
-  со стороны `max` и `SecDerT = 2·(T_cell − T_boundary) / h²` со стороны `min`.
+  производная считается через граничное условие (фиктивная ячейка-зеркало):
+  `SecDerT = 2·(T_стенки − T_cell) / h²` со стороны `max` и
+  `SecDerT = 2·(T_cell − T_стенки) / h²` со стороны `min`.
 
-### 4.6 Что происходит за одну итерацию (`StartCalc`)
+### 4.8 Что происходит за одну итерацию (`StartCalc`)
 
-1. обнуляются `Time` и `Iteration`, вычисляется `ThermalDiffusivity = C·h²/Δt`,
+1. обнуляются `Time` и `Iteration`, запоминается `ThermalDiffusivity = a`,
    сбрасываются флаги остановки;
 2. `UpdateFaces()` по начальным температурам;
 3. вызов `updateHandler(this, 0, 0, 0)` — «нулевая» итерация для отрисовки исходного поля;
 4. цикл `iter = 1…numberIter`:
    1. если пришёл `StopCalc()` — выставить `WasStopped` и выйти из цикла;
-   2. `UpdateFaces()` — вторые производные по текущим (старым) температурам;
-   3. `UpdateCells(C)` — сдвиг всех температур на один шаг, `Σ|ΔT|`;
-   4. `Time = iter · Δt`, `Iteration = iter`;
-   6. если `iter % updatePeriod == 0` или это последняя итерация — вызвать `updateHandler`.
+   2. `UpdateFaces()` — вторые производные по текущим (старым) температурам
+      и текущему времени (ГУ-функции времени перевычисляются каждый шаг);
+   3. `UpdateCells(step, iter − 1)` — метод подсчёта теплопередачи для всех ячеек, `Σ|ΔT|`;
+   4. `Time = iter·Δt`, `Iteration = iter`;
+   5. если `iter % updatePeriod == 0` или это последняя итерация — вызвать `updateHandler`.
 
 Порядок «сначала все грани, потом все ячейки» важен: температуры ячеек читаются только в
 пункте 3 тела цикла, поэтому схема остаётся явной и не зависит от направления обхода.
-
 
 ---
 
@@ -362,13 +396,13 @@ using ThermConductSim;
 
 const int nx = 20, ny = 20, nz = 20;
 
-// Вспомогательная функция: плоскость, заполненная одной температурой
-static double[,] Fill(int d0, int d1, double value)
+// Вспомогательная функция: плоскость, заполненная одним ГУ
+static BoundaryCondition[,] Fill(int d0, int d1, BoundaryCondition condition)
 {
-    double[,] a = new double[d0, d1];
+    var a = new BoundaryCondition[d0, d1];
     for (int i = 0; i < d0; i++)
         for (int j = 0; j < d1; j++)
-            a[i, j] = value;
+            a[i, j] = condition;
     return a;
 }
 
@@ -379,26 +413,32 @@ for (int x = 0; x < nx; x++)
         for (int z = 0; z < nz; z++)
             temps[x, y, z] = 300.0;
 
-// 2. Граничные условия: по массиву на каждую из шести граней (размерности см. в 4.4)
-double[,] hotYZ = Fill(ny, nz, 400.0);   // x = min — нагреваемая стенка
-double[,] coldYZ = Fill(ny, nz, 300.0);  // x = max
-double[,] coldXZ = Fill(nx, nz, 300.0);  // y = min и y = max
-double[,] coldXY = Fill(nx, ny, 300.0);  // z = min и z = max
+// 2. Граничные условия (размерности см. в 4.6)
+var hotYZ = Fill(ny, nz, BoundaryCondition.Dirichlet(_ => 400.0));   // x = min — нагрев
+var coldYZ = Fill(ny, nz, BoundaryCondition.Dirichlet(t => 300 + 10 * t)); // …или функция времени
+var insulXZ = Fill(nx, nz, BoundaryCondition.Neumann(_ => 0.0));     // y — теплоизоляция
+var airXY = Fill(nx, ny, BoundaryCondition.Robin(_ => 300.0, _ => 800.0)); // z — теплообмен с воздухом
 
-// 3. Сетка создаётся вместе с условиями, h = 0.001 м
+// 3. Метод расчёта — из словаря по ключу (как в conditions.json)
+CellUpdateDelegate method = ThermalFunctions.GetCellUpdateMethod("explicit");
+
+// 4. Сетка создаётся вместе с условиями, h = 0.001 м по всем осям
 Mesh mesh = new(temps,
     xPast: hotYZ, xNext: coldYZ,
-    yPast: coldXZ, yNext: coldXZ,
-    zPast: coldXY, zNext: coldXY);
+    yPast: insulXZ, yNext: insulXZ,
+    zPast: airXY, zNext: airXY,
+    cellSizeX: 0.001, cellSizeY: 0.001, cellSizeZ: 0.001,
+    updateMethod: method,
+    thermalConductivity: 45.0);
 
-// 4. Расчёт: 1000 итераций, Δt = 1 с, C = 0.15, интерфейс — раз в 10 шагов
-mesh.StartCalc(1000, 1.0, 0.15, (m, iter, time, sumAbs) =>
+// 5. Расчёт: 1000 итераций, Δt = 1 с, a = 1.5e-5 м²/с, интерфейс — раз в 10 шагов
+mesh.StartCalc(1000, 1.0, 1.5e-5, (m, iter, time, sumAbs) =>
 {
     double[,,] slice = m.TempSnapshot();   // копия — можно отдавать в другой поток
     Console.WriteLine($"iter={iter} t={time} Σ|ΔT|={sumAbs:E3}");
 }, updatePeriod: 10);
 
-// 5. Результат и повторный запуск
+// 6. Результат и повторный запуск
 double[,,] result = mesh.TempSnapshot();
 mesh.SetTemps(temps);                     // вернуть исходное поле
 ```
@@ -407,10 +447,12 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 
 | Сценарий | Ожидание | Результат |
 |---|---|---|
-| однородное поле, все ГУ равны ему же | поле не меняется | `max\|T\| = 0` |
-| одна ячейка, одна грань с ГУ `T_b` | `ΔT = 2·C·(T_b − T)` за шаг | `T = 30` при `C = 0.15`, `T_b = 100` |
+| однородное поле, все ГУ равны ему же | поле не меняется | `max\|ΔT\| = 0` |
+| Нейман q=0 на всех гранях | поле не меняется | `max\|ΔT\| = 0` |
+| Нейман ±q на противных гранях | линейный профиль, перепад `q·L/λ` | совпало (~3 К) |
+| Робин с α→∞ | совпадает с Дирихле `T_среды` | совпало |
 | линейное поле, ГУ из той же линейной функции | стационарно во всех ячейках, включая пристеночные | `max\|ΔT\| = 0` (точно) |
-| 20 шагов, ГУ на всех шести гранях | совпадение с эталонной реализацией | `max\|ΔT\| ≈ 7·10⁻¹⁵` |
+| Дирихле, зависящее от времени (функция `step_400`) | до 5 с поле не меняется, после — греется | совпало |
 
 ---
 
@@ -418,9 +460,9 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 
 ### 6.1 `MainWindow : Window`
 
-Окно — только интерфейс: создаётся по начальному полю температур и шагу сетки
-(`new MainWindow(double[,,] initialTemps, double cellSize)`), о расчётном ядре ничего не
-знает и само ничего не считает. О нажатиях кнопок оно сообщает событиями `StartRequested`
+Окно — только интерфейс: создаётся по начальному полю температур и шагам сетки
+(`new MainWindow(double[,,] initialTemps, double[] cellSizes)`), о расчётном ядре ничего
+не знает и само ничего не считает. О нажатиях кнопок оно сообщает событиями `StartRequested`
 (с проверенными параметрами `CalcSettings`), `StopRequested`, `ResetRequested`, а данные
 расчёта принимает методами `ShowFrame`, `ShowReset`, `ShowFinished`, `ShowError`.
 
@@ -435,12 +477,18 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
    `Обновлять каждые … итераций`), строка кнопок (`Старт расчёта`, `Остановить`, `Сброс`),
    строка состояния и график `SumDeltaChart` высотой 190 px.
 
+Число Куранта вводится по наименьшему шагу сетки: `C = a·Δt/h²`, `h = min(hx, hy, hz)`.
+Предел устойчивости явной схемы в этих терминах: `C ≤ 1 / (2·h²·(1/hx²+1/hy²+1/hz²))`
+(равномерная сетка — `C ≤ 1/6`); предупреждение выводится в строку состояния.
+
 **Поля**
 
 | Поле | Назначение |
 |---|---|
 | `_nx, _ny, _nz` | размеры сетки — из формы начального поля температур |
-| `_cellSize` | шаг сетки `h`, м — для подписей и вычисления `a = C·h²/Δt` |
+| `_cellSizes` | шаги сетки по осям [hx, hy, hz], м — для подписей и вычисления `a = C·h²/Δt` |
+| `_hMin` | наименьший шаг сетки, м |
+| `_stableCourant` | предел устойчивости явной схемы по введённому C |
 | `_temps` | текущий снимок температур `[X, Y, Z]`, по нему рисуется срез |
 | `_colorMin, _colorMax` | диапазон палитры; при росте/падении температуры только расширяется (цвета не «прыгают») |
 | `_axisComboBox, _sliceSlider, _sliceInfoText, _sliceImageView` | элементы панели срезов |
@@ -448,29 +496,12 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 | `_startButton, _stopButton, _resetButton, _statusText, _chart` | кнопки, строка состояния, график |
 | `_running`, `_closed`, `_lastCourant`, `_warning` | идёт ли расчёт / закрыто ли окно / последнее `C` / предупреждение о неустойчивости схемы |
 
-**Методы**
-
-| Метод | Что делает |
-|---|---|
-| `MainWindow(double[,,] initialTemps, double cellSize)` | берёт размеры сетки и диапазон температур из начального поля, строит все элементы, подписывается на клики, рисует первый кадр и печатает «Исходное состояние…» |
-| `OnAxisChanged()` | при смене нормали переставляет `Slider.Maximum` на `N-1` нужной оси и перерисовывает срез |
-| `UpdateSliceView()` | берёт срез `_temps` по выбранной оси и индексу, считает `min/max` среза, заливает `WriteableBitmap` (`Bgra8888`, ось Y развёрнута снизу вверх), присваивает `Image.Source` |
-| `TryReadSettings(out CalcSettings)` | проверяет поля ввода; при ошибке пишет её в строку состояния и возвращает `false` |
-| `OnStartClicked()` | проверяет ввод, блокирует кнопки, очищает график, печатает параметры и `a`, поднимает событие `StartRequested` (сам расчёт не запускает) |
-| `OnStopClicked()` | блокирует кнопку «Остановить» и поднимает `StopRequested` (подписчик вызывает `Mesh.StopCalc()`) |
-| `OnResetClicked()` | поднимает `ResetRequested` (подписчик возвращает начальные температуры и вызывает `ShowReset`) |
-| `ShowFrame(snapshot, iteration, time, sumAbsDeltaT)` | вызывается в UI-потоке: проверяет размерность снимка, обновляет `_temps`, расширяет диапазон палитры, добавляет точку на график, перерисовывает срез и строку состояния |
-| `ShowReset(temps)` | новое поле температур, сброс диапазона палитры, `_chart.Clear()`, перерисовка среза, сообщение «Начальные условия восстановлены» |
-| `ShowFinished(stopped, iteration, time, thermalDiffusivity)` | разблокирует кнопки и печатает «Расчёт завершён» / «Расчёт остановлен пользователем» |
-| `ShowError(message)` | разблокирует кнопки и печатает «Ошибка расчёта: …» |
-| `SetRunning(bool)` | переключает состояние трёх кнопок и признак `_running` |
-| `CheckSnapshotShape(temps)` | `ArgumentException`, если снимок не совпадает по размерам с сеткой окна |
-| `UpdateStatus(text)` | запись в строку состояния (ничего не делает, если окно закрыто) |
-| `MakeLabel`, `MakeInputBox` | создание подписи и поля ввода (ширина, подсказка-tooltip, тёмный фон) |
-| `FormatTemperature`, `FormatTempRange`, `FormatSigma` | форматирование чисел: число знаков после запятой подбирается по ширине диапазона, чтобы значение не обрезалось |
-| `TryParseDouble` | разбор дробного числа с запятой или точкой |
-| `FindRange(double[,,])` | `min/max` по всем ячейкам, `NaN` игнорируется |
-| `TemperatureToRgb(temp, min, max)` | палитра: синий → голубой → зелёный → жёлтый → красный, возвращает `(B, G, R)` |
+**Методы** — `OnAxisChanged`, `UpdateSliceView`, `TryReadSettings`, `OnStartClicked`,
+`OnStopClicked`, `OnResetClicked`, `ShowFrame`, `ShowReset`, `ShowFinished`, `ShowError`,
+`SetRunning`, `CheckSnapshotShape`, `UpdateStatus`, `MakeLabel`, `MakeInputBox`,
+`FormatTemperature`, `FormatTempRange`, `FormatSigma`, `FormatCellSizes` («h = 1×1×1 мм»),
+`SumInverseSquares`, `TryParseDouble`, `FindRange`, `TemperatureToRgb` — логика прежняя,
+изменены только шаги сетки (массив вместо одного h) и критерий устойчивости.
 
 **Многопоточность.** Расчёт запускает `Program.cs` в `Task.Run`; делегат `CalcUpdateHandler`
 вызывается на потоке расчёта, поэтому снимок `TempSnapshot()` делается там же
@@ -488,10 +519,6 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 | `Clear()` | очистить график |
 | `PointCount`, `LastValue`, `LastIteration`, `ValueAt(int)` | доступ к данным (используется автотестом) |
 | `Render(DrawingContext)` | фон, оси, сетка 5×5, подписи (по X — номер итерации и время, по Y — `Σ\|ΔT\|`, К), ломаная по точкам и текущее значение справа сверху; без данных — подсказка «нет данных — нажмите «Старт расчёта»» |
-| `ToPoint`, `CreateText`, `DrawTextLeftTop`, `DrawTextRightTop`, `DrawTextRightMiddle`, `DrawTextCenterTop`, `FormatNumber` | вспомогательные методы рисования и форматирования |
-
-Оси линейные: по X — номер итерации (снизу дополнительно время), по Y — от 0 до
-максимального `Σ|ΔT|` на всём графике.
 
 ### 6.3 `App : Application`
 
@@ -500,22 +527,22 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 
 ---
 
-## 7. `Program.cs` — начальные условия, объект расчёта и интерфейса
+## 7. `Program.cs` — условия, объект расчёта и интерфейса
 
-`Main` состоит из трёх шагов: условия из JSON, объект сетки, запуск Avalonia.
+`Main` состоит из трёх шагов: условия из conditions.json, объект сетки, запуск Avalonia.
 
 ```csharp
-MeshConditions conditions = MeshConditions.Load("initial_conditions.json", "boundary_conditions.json");
+MeshConditions conditions = MeshConditions.Load("conditions.json");
 Mesh mesh = conditions.CreateMesh();
 BuildAvaloniaApp(conditions, mesh).StartWithClassicDesktopLifetime(args);
 ```
 
-В `AfterSetup` создаётся объект интерфейса `new MainWindow(conditions.Initial, mesh.CellSize)`
+В `AfterSetup` создаётся объект интерфейса `new MainWindow(conditions.Initial, mesh.CellSizes)`
 и события окна связываются с расчётным ядром:
 
 | Событие окна | Что делает `Program.cs` |
 |---|---|
-| `StartRequested(settings)` | `Task.Run(() => mesh.StartCalc(...))` с делегатом `OnMeshUpdated` и параметрами `CalcSettings` |
+| `StartRequested(settings)` | считает `a = C·h²_min/Δt` и выполняет `Task.Run(() => mesh.StartCalc(...))` с делегатом `OnMeshUpdated` и параметрами `CalcSettings` |
 | `StopRequested` | `mesh.StopCalc()` |
 | `ResetRequested` | `mesh.SetTemps(conditions.Initial)`, затем `window.ShowReset(mesh.TempSnapshot())` |
 
@@ -524,60 +551,83 @@ BuildAvaloniaApp(conditions, mesh).StartWithClassicDesktopLifetime(args);
 передаёт снимок в `window.ShowFrame(...)`. После завершения `Task.Run` вызывается
 `window.ShowFinished(...)`, при исключении — `window.ShowError(...)`.
 
-### 7.1 Формат файлов условий
+### 7.1 Формат `conditions.json`
 
-`initial_conditions.json` (читает `MeshConditions.Load`):
+Читает `MeshConditions.Load`. Разрешены комментарии `//`, `/* */` и висячие запятые;
+все размеры массивов сверяются с сеткой, ошибки сообщаются с именем файла и поля;
+функции ищутся по ключу в словарях `ThermalFunctions` (неизвестный ключ — ошибка
+со списком доступных).
 
 | Поле | Смысл |
 |---|---|
-| `shape` | `[X, Y, Z]` — размеры сетки в ячейках |
-| `cellSize` | шаг сетки `h`, м (по умолчанию `Mesh.DefaultCellSize = 0.001`) |
-| `temperature` | одно число — **равномерное** начальное поле, К (по умолчанию `300`) |
-| `cells` | необязательный массив `[X][Y][Z]`: своя температура у каждой ячейки (заменяет `temperature`) |
+| `grid.cells` | `[X, Y, Z]` — количество ячеек по осям (обязательно, если нет `initial.cells`) |
+| `grid.size` | `[Lx, Ly, Lz]` — линейные размеры области по осям, м → `h = size/cells` |
+| `grid.cellSize` | альтернатива `size`: число (один шаг на все оси) или `[hx, hy, hz]`, м |
+| `thermalConductivity` | λ, Вт/(м·К), для ГУ 2-го и 3-го рода (по умолчанию `45`) |
+| `method` | ключ метода расчёта из `ThermalFunctions.CellUpdateMethods` (по умолчанию `"explicit"`) |
+| `initial.temperature` | одно число — **равномерное** начальное поле, К (по умолчанию `300`) |
+| `initial.function` | ключ начального распределения `T(x, y, z)` из `ThermalFunctions.InitialTemperatures` |
+| `initial.cells` | массив `[X][Y][Z]`: своя температура у каждой ячейки (заменяет `temperature`) |
+| `boundaries.xPast … zNext` | по одному ГУ на каждую из шести граней; пропуск — `300` К (1-й род) |
 
-`boundary_conditions.json`: поля `xPast`, `xNext`, `yPast`, `yNext`, `zPast`, `zNext` — каждое
-либо число (равномерная температура всей грани, К), либо двумерный массив нужной формы
-(x — `[Y][Z]`, y — `[X][Z]`, z — `[X][Y]`). Пропущенное поле — `300` К. В обоих файлах
-разрешены комментарии `//`, `/* */` и висячие запятые; размеры всех массивов сверяются
-с `shape`, ошибки сообщаются с именем файла и поля.
+Граница — число, массив или объект:
 
-Демонстрационные значения: сетка `32 × 32 × 32`, `h = 0.001` м, начальное поле равномерное
-`300` К, грань `x = min` — нагреваемая стенка `400` К, остальные пять граней — `300` К.
+```
+300.0                          // 1-й род, константа на всю грань
+[[300, 300], [300, 300]]       // 1-й род, своя константа каждой ячейке грани
+{ "type": "dirichlet", "value": 400.0 }                     // 1-й род, константа
+{ "type": "dirichlet", "function": "sin_pulse" }            // 1-й род, функция времени
+{ "type": "neumann",   "value": 0.0 }                       // 2-й род, поток Вт/м²
+{ "type": "robin",     "value": [300.0, 800.0] }            // 3-й род, [T среды, α]
+{ "type": "dirichlet", "values":   [[...], [...]] }         // своё число каждой ячейке
+{ "type": "dirichlet", "functions": [["k1", "k2"], [...]] } // своя функция каждой ячейке
+```
 
-Чтобы сменить условия эксперимента, достаточно поправить JSON-файлы — расчётное ядро и
-интерфейс менять не нужно.
+* `type` — `dirichlet` | `neumann` | `robin` (регистр не важен);
+* ровно одно поле значений: `value` / `values` / `function` / `functions`;
+* элемент — число или ключ из `ThermalFunctions.BoundaryConditions`; у Робина элемент —
+  пара `[T_среды, α]` (числа или ключи);
+* размерность `values`/`functions` — форма грани: x — `[Y][Z]`, y — `[X][Z]`, z — `[X][Y]`.
+
+Демонстрационные значения (см. `conditions.json`): сетка `16³`, область `16` мм
+(`h = 1` мм), начальное поле равномерное `300` К, `λ = 45` Вт/(м·К), метод `"explicit"`;
+грань `x = min` — нагретая полоса `500` К среди `200` К (по ячейкам), `x = max` — `300` К,
+`y = min` — теплоизоляция (Нейман `0`), `y = max` — теплообмен со средой `300` К
+(Робин, `α = 800`), грани `z` — `300` К. Чтобы сменить условия эксперимента, достаточно
+поправить `conditions.json` (и, при нужде, словари `ThermalFunctions`) — расчётное ядро
+и интерфейс менять не нужно.
 
 ---
 
 ## 8. Ограничения и особенности реализации
 
-1. **Только ГУ 1-го рода** (заданная температура на грани) и только **постоянные по
-   времени**: граничное условие — число, а не функция.
-2. **Аппроксимация на внешней грани — первого порядка** по `h` (фиктивная ячейка-зеркало
-   `T_ghost = 2T_b − T_cell`, множитель 2 — учёт расстояния `h/2` до стенки). Для линейного
-   поля она **точна** (`max|ΔT| = 0` и в пристеночных ячейках), на гладких профилях даёт
-   у стенки ошибку `O(h)`, тогда как внутри — `O(h²)`. Вариант без множителя 2 (граничное
-   условие в центре фиктивной ячейки на расстоянии `h`) формально тоже сходится, но сдвигает
-   стенку на `h/2` наружу: ошибка у стенки `(h/2)·∂T/∂x`, а поток через стенку занижен вдвое.
-3. **Шаг сетки одинаков по всем осям**, число Куранта одно на весь куб.
-4. **Схема явная**: при `C > 1/6` решение может «разлететься» (интерфейс предупреждает,
-   но не запрещает расчёт).
+1. **ГУ 1–3-го рода, константы или функции времени** — но не функции координат вдоль
+   грани: пространственное изменение задаётся поклеточно (`values`/`functions`).
+2. **Аппроксимация на внешней грани — первого порядка** по `h` (фиктивная ячейка-зеркало,
+   множитель 2 — учёт расстояния `h/2` до стенки). Для линейного поля она **точна**
+   (включая пристеночные ячейки), на гладких профилях даёт у стенки ошибку `O(h)`,
+   тогда как внутри — `O(h²)`.
+3. **Шаги сетки могут различаться по осям**; число Куранта в интерфейсе — одно, по
+   наименьшему шагу.
+4. **Схема "explicit" явная**: при `a·Δt·(1/hx²+1/hy²+1/hz²) > 1/2` решение может
+   «разлететься» (интерфейс предупреждает, но не запрещает расчёт). Схема
+   "dufort-frankel" устойчива при любом шаге.
 5. **Память**: `X·Y·Z` ячеек + `(X+1)YZ + X(Y+1)Z + XY(Z+1)` граней; каждый вызов
    `TempSnapshot()` копирует весь массив температур (для `32³` это ~260 КБ).
-   Промежуточных массивов нет: все связи — прямые ссылки в полях (`Cell.XNext`, `Face.PastCell`),
-   поэтому на `32³` это ≈ 80 Б на ячейку (2.5 МБ) и ≈ 56 Б на грань против почти вдвое
-   большего варианта с массивом `Face[6]` у каждой ячейки.
+   Промежуточных массивов нет: все связи — прямые ссылки в полях (`Cell.XNext`,
+   `Face.PastCell`). По сравнению с первой версией у `Cell` добавились `PrevTemp`
+   (8 Б) и ссылка на метод расчёта, у `Face` — ссылка на `BoundaryCondition` и шаг
+   своей оси: на `32³` добавка — порядка сотен килобайт, несмотря на миллион граней.
 6. **Один расчёт за раз**: `StartCalc` синхронный и занимает вызвавший его поток,
    поэтому в UI он запускается через `Task.Run`.
-7. **Условия читаются из JSON** (`initial_conditions.json`, `boundary_conditions.json`);
-   результаты расчёта (срезы, график) не сохраняются — только показываются в окне.
+7. **Условия читаются из JSON** (`conditions.json`); результаты расчёта (срезы, график)
+   не сохраняются — только показываются в окне.
 
 ## 9. Возможные направления развития
 
-* ГУ 2-го рода (заданный тепловой поток) и 3-го рода (теплообмен со средой): добавить в
-  `Face` поле потока/коэффициента и ветку в `Face.UpdateSecDerT()`;
-* зависящие от времени ГУ: заменить `BoundaryTemp` на функцию `Func<double, double>`;
+* ГУ-функции координат и времени вместе: `Func<(x, y, z, t), double>` (сейчас — время
+  или поклеточный перебор);
 * аппроксимация внешней грани второго порядка точности;
-* неявная схема или автоматический подбор `Δt` из условия устойчивости;
+* неявная схема (потребует решения СЛАУ) и автоматический подбор `Δt` из условия устойчивости;
 * экспорт срезов в PNG/CSV и сохранение истории `Σ|ΔT|`;
 * распараллеливание `UpdateFaces`/`UpdateCells` (`Parallel.For`) — сейчас всё однопоточное.
