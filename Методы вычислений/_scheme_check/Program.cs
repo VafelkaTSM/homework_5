@@ -1,0 +1,113 @@
+﻿using System;
+using System.Globalization;
+using SodaTest;
+
+internal sealed class StopSignal : Exception
+{
+}
+
+internal static class Check
+{
+    private static void Main()
+    {
+        Convergence();
+    }
+
+    private static void Convergence()
+    {
+        Console.WriteLine("cells     t        L1(rho)   L1(p)     L1(u)     x_shock  exact    d_shock  max|u|  u*");
+        foreach (int cells in new[] { 250, 500, 1000, 2000, 4000 })
+        {
+            var parameters = new CalculationParameters
+            {
+                Cells = cells,
+                Iterations = 40000,
+                TimeStep = 1e-4,
+                CourantNumber = 0.2
+            };
+
+            SolutionState? found = null;
+            try
+            {
+                LargeParticleMethod.Run(parameters, new GasParameters(), state =>
+                {
+                    if (state.Time >= 0.2)
+                    {
+                        found = state;
+                        throw new StopSignal();
+                    }
+                }, 10);
+            }
+            catch (StopSignal)
+            {
+            }
+
+            if (found is null)
+            {
+                Console.WriteLine(cells.ToString(CultureInfo.InvariantCulture) + "  no state reached t = 0.2");
+                continue;
+            }
+
+            Report(found);
+        }
+    }
+
+    private static void Report(SolutionState state)
+    {
+        double h = state.X[1] - state.X[0];
+        double l1Rho = 0.0, l1P = 0.0, l1U = 0.0;
+        for (int i = 0; i < state.X.Length; i++)
+        {
+            Exact.At(state.X[i], state.Time, out double rho, out double p, out double u);
+            l1Rho += Math.Abs(state.Density[i] - rho) * h;
+            l1P += Math.Abs(state.Pressure[i] - p) * h;
+            l1U += Math.Abs(state.Velocity[i] - u) * h;
+        }
+
+        Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
+            "{0,5} {1,8:F4} {2,9:F5} {3,9:F5} {4,9:F5} {5,9:F4} {6,8:F4} {7,8:F4} {8,7:F4} {9,6:F4}",
+            state.X.Length, state.Time, l1Rho, l1P, l1U,
+            ShockPosition(state), Exact.ShockPosition(state.Time),
+            ShockPosition(state) - Exact.ShockPosition(state.Time),
+            MaxAbs(state.Velocity), Exact.StarVelocity()));
+    }
+
+    /// <summary>Положение ударной волны: точка максимального скачка давления.</summary>
+    private static double ShockPosition(SolutionState state)
+    {
+        double pStar = Exact.StarPressure();
+        double middle = 0.5 * (pStar + Exact.PressureRight);
+
+        int best = -1;
+        double bestJump = 0.0;
+        for (int i = 0; i + 1 < state.X.Length; i++)
+        {
+            double jump = Math.Abs(state.Pressure[i + 1] - state.Pressure[i]);
+            if (jump > bestJump)
+            {
+                bestJump = jump;
+                best = i;
+            }
+        }
+
+        if (best < 0 || bestJump < 1e-6) return double.NaN;
+
+        double p1 = state.Pressure[best];
+        double p2 = state.Pressure[best + 1];
+        double weight = Math.Abs(p1 - p2) > 1e-12 ? (p1 - middle) / (p1 - p2) : 0.5;
+        if (weight < 0.0) weight = 0.0;
+        if (weight > 1.0) weight = 1.0;
+        return state.X[best] + weight * (state.X[best + 1] - state.X[best]);
+    }
+
+    private static double MaxAbs(double[] values)
+    {
+        double result = 0.0;
+        foreach (double value in values)
+        {
+            double magnitude = Math.Abs(value);
+            if (magnitude > result) result = magnitude;
+        }
+        return result;
+    }
+}

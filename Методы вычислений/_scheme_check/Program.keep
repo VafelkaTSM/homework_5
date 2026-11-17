@@ -1,0 +1,66 @@
+using System;
+using System.Globalization;
+using SodaTest;
+
+internal static class Osc
+{
+    private static void Main()
+    {
+        const double uStar = 0.9274;
+        const double pStar = 0.3031;
+        const double rhoStar = 0.4263;
+
+        Console.WriteLine("cells |  dt      | t      | max u  | min p  | max TV(rho) | extrema in u | rho plateau | p plateau");
+        foreach (int cells in new[] { 250, 500, 1000, 2000, 4000 })
+        {
+            foreach (double dt in new[] { 1e-4, 1e-3 })
+            {
+                var calc = new CalculationParameters
+                {
+                    Iterations = 200000,
+                    TimeStep = dt,
+                    CourantNumber = 0.2,
+                    Cells = cells
+                };
+
+                SolutionState? last = null;
+                LargeParticleMethod.Run(calc, new GasParameters(), state =>
+                {
+                    if (state.Time <= 0.20005) last = state;
+                }, 10);
+
+                var s = last!;
+                double maxU = Max(s.Velocity);
+                double minP = Min(s.Pressure);
+
+                double tv = Math.Abs(s.Density[0]);
+                for (int i = 1; i < s.Density.Length; i++) tv += Math.Abs(s.Density[i] - s.Density[i - 1]);
+
+                int extrema = 0;
+                for (int i = 1; i < s.Velocity.Length - 1; i++)
+                {
+                    double a = s.Velocity[i] - s.Velocity[i - 1];
+                    double b = s.Velocity[i + 1] - s.Velocity[i];
+                    if (a * b < 0.0) extrema++;
+                }
+
+                Console.WriteLine(string.Format(CultureInfo.InvariantCulture,
+                    "{0,5} | {1:E1} | {2:F4} | {3:F4} | {4:F4} | {5:F4}      | {6,3}          | {7:F4}      | {8:F4}",
+                    cells, dt, s.Time, maxU, minP, tv, extrema,
+                    At(s, s.Density, 0.52), At(s, s.Pressure, 0.52)));
+            }
+        }
+    }
+
+    private static double At(SolutionState s, double[] values, double x)
+    {
+        double h = s.X[1] - s.X[0];
+        int index = (int)Math.Round(x / h - 0.5);
+        if (index < 0) index = 0;
+        if (index >= values.Length) index = values.Length - 1;
+        return values[index];
+    }
+
+    private static double Min(double[] v) { double m = double.MaxValue; foreach (var x in v) if (x < m) m = x; return m; }
+    private static double Max(double[] v) { double m = double.MinValue; foreach (var x in v) if (x > m) m = x; return m; }
+}

@@ -1,0 +1,99 @@
+using System;
+using System.Drawing;
+using System.Reflection;
+using System.Threading;
+using System.Windows.Forms;
+using SodaTest;
+
+internal static class Smoke
+{
+    private static Exception? _lastError;
+
+    [STAThread]
+    private static void Main()
+    {
+        Application.SetHighDpiMode(HighDpiMode.SystemAware);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        Application.ThreadException += (s, e) => _lastError = e.Exception;
+
+        try
+        {
+            var form = new GUI();
+            form.StartPosition = FormStartPosition.Manual;
+            form.Location = new Point(40, 40);
+            form.Size = new Size(1280, 820);
+            form.Show();
+            Application.DoEvents();
+
+            // Как в реальном приложении (Application.Run): контекст синхронизации
+            // нужен, чтобы Progress<SolutionState> доставлял снимки в поток интерфейса.
+            SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+
+            Render(form, "gui_initial.png");
+
+            SetInput(form, "_iterationsInput", 2400);
+            SetInput(form, "_cellsInput", 1000);
+            SetInput(form, "_updateEveryInput", 50);
+
+            var start = typeof(GUI).GetMethod("StartButton_Click", BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+            var progressLabel = (ToolStripStatusLabel)typeof(GUI).GetField("_progressLabel", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
+            var statusLabel = (ToolStripStatusLabel)typeof(GUI).GetField("_statusLabel", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
+            var history = new System.Collections.Generic.List<string>();
+            progressLabel.TextChanged += (s, e) => history.Add("P: " + progressLabel.Text);
+            statusLabel.TextChanged += (s, e) => history.Add("S: " + statusLabel.Text);
+
+            start.Invoke(form, new object?[] { form, EventArgs.Empty });
+
+            bool running = true;
+            for (int i = 0; i < 600 && running; i++)
+            {
+                Application.DoEvents();
+                Thread.Sleep(20);
+                running = (bool)typeof(GUI).GetField("_isRunning", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
+            }
+            Console.WriteLine(running ? "calculation still running (timeout)" : "calculation finished");
+
+            Application.DoEvents();
+            var status = (ToolStripStatusLabel)typeof(GUI).GetField("_statusLabel", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
+            var progress = (ToolStripStatusLabel)typeof(GUI).GetField("_progressLabel", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
+            Console.WriteLine("status: " + status.Text);
+            Console.WriteLine("progress: " + progress.Text);
+
+            for (int i = 0; i < 40; i++)
+            {
+                Application.DoEvents();
+                Thread.Sleep(20);
+            }
+            Console.WriteLine("after settling -> status: " + status.Text);
+            Console.WriteLine("after settling -> progress: " + progress.Text);
+            Console.WriteLine("progress history (" + history.Count + "):");
+            for (int i = 0; i < history.Count; i++)
+                Console.WriteLine(i.ToString("000") + " " + history[i]);
+
+            Render(form, "gui_final.png");
+            form.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("FAILED: " + ex);
+        }
+
+        Console.WriteLine(_lastError is null ? "no UI-thread exceptions" : "UI exception: " + _lastError);
+    }
+
+    private static void SetInput(GUI form, string field, decimal value)
+    {
+        var input = (NumericUpDown)typeof(GUI).GetField(field, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(form)!;
+        input.Value = value;
+    }
+
+    private static void Render(Form form, string file)
+    {
+        using var bitmap = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(bitmap, new Rectangle(0, 0, form.Width, form.Height));
+        bitmap.Save(file);
+        Console.WriteLine("saved " + file);
+    }
+}

@@ -1,0 +1,15 @@
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\bin\Release\net10.0-windows\_gui_check.exe
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\bin\Release\net10.0-windows\_gui_check.deps.json
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\bin\Release\net10.0-windows\_gui_check.runtimeconfig.json
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\bin\Release\net10.0-windows\_gui_check.dll
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\bin\Release\net10.0-windows\_gui_check.pdb
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\_gui_check.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\_gui_check.AssemblyInfoInputs.cache
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\_gui_check.AssemblyInfo.cs
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\_gui_check.csproj.CoreCompileInputs.cache
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\_gui_check.sourcelink.json
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\_gui_check.dll
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\refint\_gui_check.dll
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\_gui_check.pdb
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\_gui_check.genruntimeconfig.cache
+C:\Users\TSM\Desktop\homework_5\Методы вычислений\_gui_check\obj\Release\net10.0-windows\ref\_gui_check.dll
