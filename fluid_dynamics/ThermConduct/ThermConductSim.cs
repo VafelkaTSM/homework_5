@@ -232,8 +232,12 @@ public class Face
 /// <param name="mesh">Сетка, по которой идёт расчёт.</param>
 /// <param name="iteration">Номер выполненной итерации.</param>
 /// <param name="time">Текущее время расчёта, с.</param>
-/// <param name="sumAbsDeltaT">Сумма модулей изменений температуры по всем ячейкам за итерацию, К.</param>
-public delegate void CalcUpdateHandler(Mesh mesh, int iteration, double time, double sumAbsDeltaT);
+/// <param name="laplacianSum">
+/// Сумма по всем ячейкам сумм вторых производных температуры по осям (центральные
+/// разности второго порядка), К/м²: отклонение процесса в данный момент от
+/// установившегося (в стационаре ∇²T = 0 в каждой ячейке).
+/// </param>
+public delegate void CalcUpdateHandler(Mesh mesh, int iteration, double time, double laplacianSum);
 
 /// <summary>
 /// Куб из ячеек с гранями (ячейки — центры, грани — плоскости между ними).
@@ -550,10 +554,10 @@ public class Mesh
     }
 
     /// <summary>
-    /// Запуск расчёта: на каждом шаге по текущим температурам ячеек пересчитываются
-    /// вторые производные на гранях, затем температуры ячеек методом подсчёта
-    /// теплопередачи (делегатом из conditions.json). Граничные условия перевычисляются
-    /// каждый шаг по текущему времени, поэтому могут зависеть от времени.
+    /// Запуск расчёта: температуры ячеек на каждом шаге пересчитываются методом подсчёта
+    /// теплопередачи (делегатом из conditions.json) по вторым производным на гранях,
+    /// после чего грани обновляются по новым температурам. Граничные условия
+    /// перевычисляются каждый шаг по текущему времени, поэтому могут зависеть от времени.
     /// </summary>
     /// <param name="numberIter">Количество итераций (шагов по времени).</param>
     /// <param name="deltaTime">Шаг по времени одной итерации, с.</param>
@@ -593,10 +597,11 @@ public class Mesh
 
         var step = new CellStepContext(deltaTime, thermalDiffusivity, CellSizeX, CellSizeY, CellSizeZ);
 
-        // Начальное состояние: вторые производные на гранях по начальным температурам
+        // Начальное состояние: вторые производные на гранях по начальным температурам.
+        // Делегату передаётся Σ∇²T начального поля — отклонение от установившегося процесса.
         UpdateFaces();
 
-        updateHandler?.Invoke(this, 0, Time, 0.0);
+        updateHandler?.Invoke(this, 0, Time, SumLaplacian());
 
         for (int iteration = 1; iteration <= numberIter; iteration++)
         {
@@ -607,15 +612,20 @@ public class Mesh
                 break;
             }
 
-            UpdateFaces();
-            double sumAbsDeltaT = UpdateCells(step, iteration - 1);
+            // Ячейки считаются по граням состояния iteration − 1 (схема остаётся явной:
+            // SecDerT граней за время обхода ячеек не меняются).
+            UpdateCells(step, iteration - 1);
 
             Time = iteration * deltaTime;
             Iteration = iteration;
 
+            // Грани по новым температурам: Σ∇²T ниже считается уже по тому состоянию,
+            // которое в этот момент показывает интерфейс.
+            UpdateFaces();
+
             if (updateHandler != null && (iteration % updatePeriod == 0 || iteration == numberIter))
             {
-                updateHandler(this, Iteration, Time, sumAbsDeltaT);
+                updateHandler(this, Iteration, Time, SumLaplacian());
             }
         }
     }
@@ -643,15 +653,34 @@ public class Mesh
         }
     }
 
-    /// <summary>Обновление температур всех ячеек выбранным методом. Возвращает сумму модулей приращений, К.</summary>
-    private double UpdateCells(in CellStepContext step, int stepIndex)
+    /// <summary>Обновление температур всех ячеек выбранным методом (по SecDerT своих граней).</summary>
+    private void UpdateCells(in CellStepContext step, int stepIndex)
     {
-        double sumAbsDeltaT = 0.0;
         foreach (Cell cell in _cellList)
         {
-            sumAbsDeltaT += Math.Abs(cell.UpdateT(step, stepIndex));
+            cell.UpdateT(step, stepIndex);
         }
-        return sumAbsDeltaT;
+    }
+
+    /// <summary>
+    /// Сумма по всем ячейкам сумм вторых производных температуры по координатам, К/м².
+    /// Каждая вторя производная — трёхточечная центральная разность второго порядка:
+    /// XNext.SecDerT − XPast.SecDerT = (T_{i+1} − 2·T_i + T_{i−1}) / h² (то же по Y и Z
+    /// со своими шагами); на внешних гранях недостающая температура восстанавливается
+    /// из граничного условия через фиктивную ячейку-зеркало. В установившемся процессе
+    /// ∇²T = 0 в каждой ячейке, поэтому сумма стремится к нулю — это мера отклонения
+    /// текущего состояния от стационарного.
+    /// </summary>
+    private double SumLaplacian()
+    {
+        double sum = 0.0;
+        foreach (Cell cell in _cellList)
+        {
+            sum += (cell.XNext.SecDerT - cell.XPast.SecDerT)
+                 + (cell.YNext.SecDerT - cell.YPast.SecDerT)
+                 + (cell.ZNext.SecDerT - cell.ZPast.SecDerT);
+        }
+        return sum;
     }
 
     /// <summary>Проверка, что двумерный массив совпадает по размерам с плоскостью сетки.</summary>

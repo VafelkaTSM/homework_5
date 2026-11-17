@@ -2,7 +2,8 @@
 
 Учебный проект: расчёт распределения температуры в параллелепипеде из `X × Y × Z`
 ячеек и визуализация результата в окне AvaloniaUI — срез по выбранной оси и график
-суммы модулей изменений температуры `Σ|ΔT|` по итерациям.
+отклонения процесса от установившегося: суммы по ячейкам сумм вторых производных
+температуры по осям `Σ∇²T` (центральные разности второго порядка) по итерациям.
 
 Все условия эксперимента задаются **одним** JSON-файлом `conditions.json` (загрузчик —
 `MeshConditions.cs`): сетка (число ячеек и линейные размеры в метрах), метод расчёта,
@@ -128,10 +129,10 @@ dotnet run
 |---|---:|---|
 | `Program.cs` | 103 | точка входа: условия из conditions.json → объект сетки → окно → запуск расчёта с делегатом в интерфейс |
 | `MeshConditions.cs` | 684 | чтение conditions.json (сетка, метод, начальные и граничные условия), `CreateMesh()` (namespace `Program`) |
-| `ThermConductSim.cs` | 686 | расчётное ядро: `Cell`, `Face`, `Mesh`, `BoundaryKind`+`BoundaryCondition` рядом, делегаты, `CellStepContext` (namespace `ThermConductSim`) |
+| `ThermConductSim.cs` | 715 | расчётное ядро: `Cell`, `Face`, `Mesh`, `BoundaryKind`+`BoundaryCondition` рядом, делегаты, `CellStepContext` (namespace `ThermConductSim`) |
 | `ThermalFunctions.cs` | 156 | библиотека функций и методов: словари `BoundaryConditions`, `InitialTemperatures`, `CellUpdateMethods` — вызов по ключу (namespace `ThermConductSim`) |
 | `BoundaryCondition.cs` | 103 | ГУ 1–3-го рода: вид, функции времени, температура стенки (namespace `ThermConductSim`) |
-| `ThermSliceViewer.cs` | 981 | только интерфейс: `MainWindow`, `SumDeltaChart`, `App`, `CalcSettings` (namespace `ThermSliceViewer`) |
+| `ThermSliceViewer.cs` | 993 | только интерфейс: `MainWindow`, `LaplaceSumChart`, `App`, `CalcSettings` (namespace `ThermSliceViewer`) |
 | `conditions.json` | 84 | единый файл условий: сетка, метод, начальное поле, граничные условия |
 | `ThermConduct.csproj` | — | целевая платформа, ссылки на Avalonia, копирование conditions.json в каталог сборки |
 
@@ -255,9 +256,13 @@ public void UpdateSecDerT(double time, double thermalConductivity)
 ### 4.5 `CalcUpdateHandler` — делегат обратного вызова
 
 ```csharp
-public delegate void CalcUpdateHandler(Mesh mesh, int iteration, double time, double sumAbsDeltaT);
+public delegate void CalcUpdateHandler(Mesh mesh, int iteration, double time, double laplacianSum);
 ```
 
+`laplacianSum` — сумма по всем ячейкам сумм вторых производных температуры по осям
+(каждая — трёхточечная центральная разность `(T_{i+1} − 2T_i + T_{i−1}) / h²` второго
+порядка точности), К/м². В установившемся процессе `∇²T = 0` в каждой ячейке, поэтому
+сумма стремится к нулю — это мера отклонения текущего состояния от стационарного.
 Вызывается **на том потоке, где идёт расчёт**, поэтому в обработчике нужно сделать копию
 данных (`mesh.TempSnapshot()`) и передать её в UI-поток (`Dispatcher.UIThread.Post`).
 
@@ -349,7 +354,8 @@ public Mesh(double[,,] initTemp,
 | `CreateFaces(xPast, …, zNext)` | создаёт грани со ссылками на соседние ячейки; у внешних плоскостей вместо одной из ячеек — ГУ |
 | `CreateFace(pastCell, nextCell, boundary, cellSize, axis)` | создаёт одну грань и присваивает её в поля ячеек по оси |
 | `UpdateFaces()` | пересчитывает `SecDerT` на всех гранях по текущему времени и λ |
-| `UpdateCells(in step, stepIndex)` | вызывает `Cell.UpdateT` у всех ячеек, возвращает `Σ|ΔT|` |
+| `UpdateCells(in step, stepIndex)` | вызывает `Cell.UpdateT` у всех ячеек |
+| `SumLaplacian()` | сумма по ячейкам сумм вторых производных по осям `(SecDerT_next − SecDerT_past)` — отклонение от установившегося процесса, К/м² |
 | `CheckShape(BoundaryCondition[,] …)` / `CheckShape(double[,,] …)` | проверка размерности плоскостей ГУ и температур |
 
 ### 4.7 Индексация: какая грань какой ячейке принадлежит
@@ -375,17 +381,24 @@ public Mesh(double[,,] initTemp,
 1. обнуляются `Time` и `Iteration`, запоминается `ThermalDiffusivity = a`,
    сбрасываются флаги остановки;
 2. `UpdateFaces()` по начальным температурам;
-3. вызов `updateHandler(this, 0, 0, 0)` — «нулевая» итерация для отрисовки исходного поля;
+3. вызов `updateHandler(this, 0, 0, SumLaplacian())` — «нулевая» итерация для отрисовки
+   исходного поля вместе с его отклонением от установившегося процесса;
 4. цикл `iter = 1…numberIter`:
    1. если пришёл `StopCalc()` — выставить `WasStopped` и выйти из цикла;
-   2. `UpdateFaces()` — вторые производные по текущим (старым) температурам
-      и текущему времени (ГУ-функции времени перевычисляются каждый шаг);
-   3. `UpdateCells(step, iter − 1)` — метод подсчёта теплопередачи для всех ячеек, `Σ|ΔT|`;
-   4. `Time = iter·Δt`, `Iteration = iter`;
-   5. если `iter % updatePeriod == 0` или это последняя итерация — вызвать `updateHandler`.
+   2. `UpdateCells(step, iter − 1)` — метод подсчёта теплопередачи для всех ячеек
+      (по `SecDerT` граней, посчитанным на предыдущем шаге);
+   3. `Time = iter·Δt`, `Iteration = iter`;
+   4. `UpdateFaces()` — вторые производные уже по новым температурам и текущему
+      времени (ГУ-функции времени перевычисляются каждый шаг);
+   5. если `iter % updatePeriod == 0` или это последняя итерация — вызвать
+      `updateHandler` со значением `SumLaplacian()` этого состояния.
 
-Порядок «сначала все грани, потом все ячейки» важен: температуры ячеек читаются только в
-пункте 3 тела цикла, поэтому схема остаётся явной и не зависит от направления обхода.
+Порядок «сначала все ячейки, потом все грани» важен: температуры ячеек читаются только
+методами подсчёта теплопередачи, а грани пересчитываются после того, как все ячейки
+обновлены, поэтому схема остаётся явной и не зависит от направления обхода. Число
+`UpdateFaces()` за расчёт то же, что в варианте «грани в начале шага», но `Σ∇²T`
+передаётся уже по тому состоянию, которое показывает интерфейс (отклонение «в данный
+момент»).
 
 ---
 
@@ -432,10 +445,10 @@ Mesh mesh = new(temps,
     thermalConductivity: 45.0);
 
 // 5. Расчёт: 1000 итераций, Δt = 1 с, a = 1.5e-5 м²/с, интерфейс — раз в 10 шагов
-mesh.StartCalc(1000, 1.0, 1.5e-5, (m, iter, time, sumAbs) =>
+mesh.StartCalc(1000, 1.0, 1.5e-5, (m, iter, time, laplacianSum) =>
 {
     double[,,] slice = m.TempSnapshot();   // копия — можно отдавать в другой поток
-    Console.WriteLine($"iter={iter} t={time} Σ|ΔT|={sumAbs:E3}");
+    Console.WriteLine($"iter={iter} t={time} Σ∇²T={laplacianSum:E3}");
 }, updatePeriod: 10);
 
 // 6. Результат и повторный запуск
@@ -475,7 +488,7 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
    (`BitmapInterpolationMode.None`), чтобы пиксели оставались «квадратиками».
 3. **Нижняя панель**: строка параметров (`Итераций`, `Шаг dt`, `Число Куранта`,
    `Обновлять каждые … итераций`), строка кнопок (`Старт расчёта`, `Остановить`, `Сброс`),
-   строка состояния и график `SumDeltaChart` высотой 190 px.
+   строка состояния и график `LaplaceSumChart` высотой 190 px.
 
 Число Куранта вводится по наименьшему шагу сетки: `C = a·Δt/h²`, `h = min(hx, hy, hz)`.
 Предел устойчивости явной схемы в этих терминах: `C ≤ 1 / (2·h²·(1/hx²+1/hy²+1/hz²))`
@@ -509,16 +522,16 @@ mesh.SetTemps(temps);                     // вернуть исходное п�
 на UI-потоке через `Dispatcher.UIThread.Post`. После `ShowFinished` (`_running == false`)
 отложенные кадры больше не затирают итоговое сообщение в строке состояния.
 
-### 6.2 `SumDeltaChart : Control`
+### 6.2 `LaplaceSumChart : Control`
 
 Собственный элемент отрисовки (без сторонних библиотек графиков).
 
 | Член | Назначение |
 |---|---|
-| `AddPoint(int iteration, double time, double sumAbsDeltaT)` | добавить точку и вызвать `InvalidateVisual()` |
+| `AddPoint(int iteration, double time, double laplacianSum)` | добавить точку и вызвать `InvalidateVisual()` |
 | `Clear()` | очистить график |
 | `PointCount`, `LastValue`, `LastIteration`, `ValueAt(int)` | доступ к данным (используется автотестом) |
-| `Render(DrawingContext)` | фон, оси, сетка 5×5, подписи (по X — номер итерации и время, по Y — `Σ\|ΔT\|`, К), ломаная по точкам и текущее значение справа сверху; без данных — подсказка «нет данных — нажмите «Старт расчёта»» |
+| `Render(DrawingContext)` | фон, оси, сетка 5×5, подписи (по X — номер итерации и время, по Y — `Σ∇²T`, К/м²), ломаная по точкам и текущее значение справа сверху; без данных — подсказка «нет данных — нажмите «Старт расчёта»». Шкала по Y строится от минимума до максимума (значения могут быть отрицательными — сумма без модулей), горизонтальная ось рисуется на уровне нуля — установившегося процесса |
 
 ### 6.3 `App : Application`
 
@@ -546,7 +559,7 @@ BuildAvaloniaApp(conditions, mesh).StartWithClassicDesktopLifetime(args);
 | `StopRequested` | `mesh.StopCalc()` |
 | `ResetRequested` | `mesh.SetTemps(conditions.Initial)`, затем `window.ShowReset(mesh.TempSnapshot())` |
 
-Делегат `OnMeshUpdated(window, mesh, iteration, time, sumAbsDeltaT)` (тип `CalcUpdateHandler`)
+Делегат `OnMeshUpdated(window, mesh, iteration, time, laplacianSum)` (тип `CalcUpdateHandler`)
 вызывается на потоке расчёта: делает `mesh.TempSnapshot()` и через `Dispatcher.UIThread.Post`
 передаёт снимок в `window.ShowFrame(...)`. После завершения `Task.Run` вызывается
 `window.ShowFinished(...)`, при исключении — `window.ShowError(...)`.
@@ -591,9 +604,10 @@ BuildAvaloniaApp(conditions, mesh).StartWithClassicDesktopLifetime(args);
 
 Демонстрационные значения (см. `conditions.json`): сетка `16³`, область `16` мм
 (`h = 1` мм), начальное поле равномерное `300` К, `λ = 45` Вт/(м·К), метод `"explicit"`;
-грань `x = min` — нагретая полоса `500` К среди `200` К (по ячейкам), `x = max` — `300` К,
-`y = min` — теплоизоляция (Нейман `0`), `y = max` — теплообмен со средой `300` К
-(Робин, `α = 800`), грани `z` — `300` К. Чтобы сменить условия эксперимента, достаточно
+грань `x = min` — циклическая функция времени (Дирихле `sin_pulse`: импульс `300…400` К,
+период `10` с), грань `x = max` — постоянный градиент температуры
+`∂T/∂x = −10` К/мм (Нейман, `q = λ·∂T/∂x = −450000` Вт/м²), грани `y` и `z` — нулевой
+градиент (Нейман `0`, теплоизоляция). Чтобы сменить условия эксперимента, достаточно
 поправить `conditions.json` (и, при нужде, словари `ThermalFunctions`) — расчётное ядро
 и интерфейс менять не нужно.
 
@@ -629,5 +643,5 @@ BuildAvaloniaApp(conditions, mesh).StartWithClassicDesktopLifetime(args);
   или поклеточный перебор);
 * аппроксимация внешней грани второго порядка точности;
 * неявная схема (потребует решения СЛАУ) и автоматический подбор `Δt` из условия устойчивости;
-* экспорт срезов в PNG/CSV и сохранение истории `Σ|ΔT|`;
+* экспорт срезов в PNG/CSV и сохранение истории `Σ∇²T`;
 * распараллеливание `UpdateFaces`/`UpdateCells` (`Parallel.For`) — сейчас всё однопоточное.

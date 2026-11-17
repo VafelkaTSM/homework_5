@@ -79,7 +79,7 @@ class Program
                 settings.Iterations,
                 settings.DeltaTime,
                 diffusivity,
-                (m, iteration, time, sumAbsDeltaT) => OnMeshUpdated(window, m, iteration, time, sumAbsDeltaT),
+                (m, iteration, time, laplacianSum) => OnMeshUpdated(window, m, iteration, time, laplacianSum),
                 settings.UpdatePeriod));
 
             window.ShowFinished(mesh.WasStopped, mesh.Iteration, mesh.Time, mesh.ThermalDiffusivity);
@@ -95,9 +95,9 @@ class Program
     /// потоке расчёта: здесь делается снимок температур, а отрисовка ставится в очередь
     /// UI-потока (Avalonia разрешает менять элементы окна только из него).
     /// </summary>
-    private static void OnMeshUpdated(MainWindow window, Mesh mesh, int iteration, double time, double sumAbsDeltaT)
+    private static void OnMeshUpdated(MainWindow window, Mesh mesh, int iteration, double time, double laplacianSum)
     {
         double[,,] snapshot = mesh.TempSnapshot();     // копия — безопасно передать в другой поток
-        Dispatcher.UIThread.Post(() => window.ShowFrame(snapshot, iteration, time, sumAbsDeltaT));
+        Dispatcher.UIThread.Post(() => window.ShowFrame(snapshot, iteration, time, laplacianSum));
     }
 }

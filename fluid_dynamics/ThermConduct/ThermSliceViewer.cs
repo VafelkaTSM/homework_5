@@ -61,7 +61,7 @@ public class MainWindow : Window
     private readonly Button _stopButton;
     private readonly Button _resetButton;
     private readonly TextBlock _statusText;
-    private readonly SumDeltaChart _chart;
+    private readonly LaplaceSumChart _chart;
 
     // Тёмное оформление: чёрный фон и белый шрифт
     private static readonly IBrush WindowBrush = new SolidColorBrush(Colors.Black);
@@ -92,7 +92,7 @@ public class MainWindow : Window
     /// <param name="cellSizes">Шаги сетки по осям [hx, hy, hz], м.</param>
     public MainWindow(double[,,] initialTemps, double[] cellSizes)
     {
-        Title = "Теплопередача: срезы сетки и сумма модулей изменений температуры";
+        Title = "Теплопередача: срезы сетки и отклонение от установившегося процесса (Σ∇²T)";
         Width = 980;
         Height = 920;
         Background = WindowBrush;
@@ -239,8 +239,8 @@ public class MainWindow : Window
             TextWrapping = TextWrapping.Wrap
         };
 
-        // График суммы модулей изменений температуры по ячейкам
-        _chart = new SumDeltaChart
+        // График Σ∇²T — отклонения процесса от установившегося (сумма вторых производных по ячейкам)
+        _chart = new LaplaceSumChart
         {
             Height = 190,
             Margin = new Thickness(10, 6, 10, 8)
@@ -512,8 +512,8 @@ public class MainWindow : Window
     /// <param name="snapshot">Снимок температур ячеек [X, Y, Z], К.</param>
     /// <param name="iteration">Номер выполненной итерации.</param>
     /// <param name="time">Текущее время расчёта, с.</param>
-    /// <param name="sumAbsDeltaT">Сумма модулей изменений температуры за итерацию, К.</param>
-    public void ShowFrame(double[,,] snapshot, int iteration, double time, double sumAbsDeltaT)
+    /// <param name="laplacianSum">Сумма по ячейкам сумм вторых производных температуры по осям, К/м².</param>
+    public void ShowFrame(double[,,] snapshot, int iteration, double time, double laplacianSum)
     {
         if (_closed)
         {
@@ -527,7 +527,7 @@ public class MainWindow : Window
         if (min < _colorMin) _colorMin = min;
         if (max > _colorMax) _colorMax = max;
 
-        _chart.AddPoint(iteration, time, sumAbsDeltaT);
+        _chart.AddPoint(iteration, time, laplacianSum);
         UpdateSliceView();
 
         // Пока расчёт идёт, в строке состояния показываем прогресс.
@@ -535,7 +535,7 @@ public class MainWindow : Window
         // отложенными обновлениями.
         if (_running)
         {
-            UpdateStatus($"Итерация {iteration}: t = {time:0.###} с, Σ|ΔT| = {FormatSigma(sumAbsDeltaT)} К, "
+            UpdateStatus($"Итерация {iteration}: t = {time:0.###} с, Σ∇²T = {FormatSigma(laplacianSum)} К/м², "
                 + $"{FormatTempRange(min, max)}, C = {_lastCourant:0.####}.");
         }
     }
@@ -754,12 +754,15 @@ public class MainWindow : Window
 }
 
 /// <summary>
-/// График суммы модулей изменений температуры в ячейках:
-/// по оси X — номер итерации (и соответствующее время), по оси Y — сумма |dT| по всем ячейкам.
+/// График отклонения процесса от установившегося: суммы по всем ячейкам сумм вторых
+/// производных температуры по осям (Σ∇²T, центральные разности второго порядка).
+/// По оси X — номер итерации (и соответствующее время), по оси Y — Σ∇²T, К/м².
+/// В стационаре ∇²T = 0 в каждой ячейке, поэтому Σ∇²T → 0. Значения могут быть
+/// отрицательными: шкала строится от минимума до максимума и всегда включает ноль.
 /// </summary>
-public sealed class SumDeltaChart : Control
+public sealed class LaplaceSumChart : Control
 {
-    private readonly List<(int Iteration, double Time, double SumAbs)> _points = new();
+    private readonly List<(int Iteration, double Time, double SumLap)> _points = new();
 
     // Тёмное оформление графика: чёрный фон, белые подписи, яркая кривая
     private static readonly IBrush BackBrush = new SolidColorBrush(Colors.Black);
@@ -770,15 +773,15 @@ public sealed class SumDeltaChart : Control
     private static readonly IPen GridPen = new Pen(new SolidColorBrush(Color.Parse("#FF303030")), 1.0);
     private static readonly IPen CurvePen = new Pen(CurveBrush, 2.0);
 
-    public SumDeltaChart()
+    public LaplaceSumChart()
     {
         MinHeight = 140;
     }
 
     /// <summary>Добавить точку графика (вызывается из UI-потока).</summary>
-    public void AddPoint(int iteration, double time, double sumAbsDeltaT)
+    public void AddPoint(int iteration, double time, double laplacianSum)
     {
-        _points.Add((iteration, time, sumAbsDeltaT));
+        _points.Add((iteration, time, laplacianSum));
         InvalidateVisual();
     }
 
@@ -792,14 +795,14 @@ public sealed class SumDeltaChart : Control
     /// <summary>Число точек на графике (используется автотестом).</summary>
     public int PointCount => _points.Count;
 
-    /// <summary>Значение Σ|ΔT| в последней точке (используется автотестом).</summary>
-    public double LastValue => _points.Count > 0 ? _points[^1].SumAbs : 0.0;
+    /// <summary>Значение Σ∇²T в последней точке (используется автотестом).</summary>
+    public double LastValue => _points.Count > 0 ? _points[^1].SumLap : 0.0;
 
     /// <summary>Номер итерации в последней точке (используется автотестом).</summary>
     public int LastIteration => _points.Count > 0 ? _points[^1].Iteration : -1;
 
-    /// <summary>Значение Σ|ΔT| в точке с индексом index (используется автотестом).</summary>
-    public double ValueAt(int index) => index >= 0 && index < _points.Count ? _points[index].SumAbs : double.NaN;
+    /// <summary>Значение Σ∇²T в точке с индексом index (используется автотестом).</summary>
+    public double ValueAt(int index) => index >= 0 && index < _points.Count ? _points[index].SumLap : double.NaN;
 
     public override void Render(DrawingContext context)
     {
@@ -826,25 +829,32 @@ public sealed class SumDeltaChart : Control
         double maxIteration = _points.Count > 0 ? Math.Max(1, _points[^1].Iteration) : 1;
         double maxTime = _points.Count > 0 ? _points[^1].Time : 0.0;
 
-        double maxSum = 0.0;
+        // Шкала по оси Y: сумма без модулей, значения могут быть отрицательными,
+        // поэтому диапазон строится от минимума до максимума и всегда включает ноль.
+        double minSum = 0.0, maxSum = 0.0;
         foreach (var point in _points)
         {
-            maxSum = Math.Max(maxSum, point.SumAbs);
+            if (double.IsNaN(point.SumLap) || double.IsInfinity(point.SumLap))
+            {
+                continue;
+            }
+            minSum = Math.Min(minSum, point.SumLap);
+            maxSum = Math.Max(maxSum, point.SumLap);
         }
-        if (!(maxSum > 0.0) || double.IsNaN(maxSum) || double.IsInfinity(maxSum))
+        if (maxSum - minSum < 1e-12)
         {
-            maxSum = 1.0;
+            maxSum = minSum + 1.0;
         }
 
         const int ticks = 5;
 
-        // Сетка и подписи по оси Y (сумма модулей изменений температуры)
+        // Сетка и подписи по оси Y (Σ∇²T, К/м²)
         for (int i = 0; i <= ticks; i++)
         {
             double frac = (double)i / ticks;
             double y = plot.Bottom - frac * plotHeight;
             context.DrawLine(GridPen, new Point(plot.X, y), new Point(plot.Right, y));
-            DrawTextRightMiddle(context, FormatNumber(maxSum * frac), new Point(plot.X - 6, y));
+            DrawTextRightMiddle(context, FormatNumber(minSum + (maxSum - minSum) * frac), new Point(plot.X - 6, y));
         }
 
         // Сетка и подписи по оси X (номер итерации и общее время)
@@ -874,9 +884,10 @@ public sealed class SumDeltaChart : Control
             }
         }
 
-        // Оси
+        // Оси: вертикальная слева, горизонтальная — на уровне нуля (в стационаре Σ∇²T = 0)
         context.DrawLine(AxisPen, new Point(plot.X, plot.Bottom), new Point(plot.X, plot.Y));
-        context.DrawLine(AxisPen, new Point(plot.X, plot.Bottom), new Point(plot.Right, plot.Bottom));
+        double zeroY = plot.Bottom - (0.0 - minSum) / (maxSum - minSum) * plotHeight;
+        context.DrawLine(AxisPen, new Point(plot.X, zeroY), new Point(plot.Right, zeroY));
 
         // Кривая
         if (_points.Count >= 2)
@@ -884,10 +895,10 @@ public sealed class SumDeltaChart : Control
             var geometry = new StreamGeometry();
             using (StreamGeometryContext gc = geometry.Open())
             {
-                gc.BeginFigure(ToPoint(_points[0], plot, maxIteration, maxSum), false);
+                gc.BeginFigure(ToPoint(_points[0], plot, maxIteration, minSum, maxSum), false);
                 for (int i = 1; i < _points.Count; i++)
                 {
-                    gc.LineTo(ToPoint(_points[i], plot, maxIteration, maxSum), true);
+                    gc.LineTo(ToPoint(_points[i], plot, maxIteration, minSum, maxSum), true);
                 }
                 gc.EndFigure(false);
             }
@@ -895,18 +906,18 @@ public sealed class SumDeltaChart : Control
         }
         else if (_points.Count == 1)
         {
-            context.DrawEllipse(CurveBrush, null, ToPoint(_points[0], plot, maxIteration, maxSum), 2.5, 2.5);
+            context.DrawEllipse(CurveBrush, null, ToPoint(_points[0], plot, maxIteration, minSum, maxSum), 2.5, 2.5);
         }
 
         // Подписи осей и текущее значение
-        DrawTextLeftTop(context, "Σ|ΔT|, К", new Point(6, 4));
+        DrawTextLeftTop(context, "Σ∇²T, К/м²", new Point(6, 4));
         DrawTextLeftTop(context, "номер итерации (снизу — время)", new Point(plot.X + 2, plot.Bottom + 38));
 
         if (_points.Count > 0)
         {
             var last = _points[^1];
             DrawTextRightTop(context,
-                $"итерация {last.Iteration}, t = {last.Time:0.###} с, Σ|ΔT| = {FormatNumber(last.SumAbs)} К",
+                $"итерация {last.Iteration}, t = {last.Time:0.###} с, Σ∇²T = {FormatNumber(last.SumLap)} К/м²",
                 new Point(plot.Right, 3));
         }
         else
@@ -918,11 +929,12 @@ public sealed class SumDeltaChart : Control
         }
     }
 
-    private static Point ToPoint((int Iteration, double Time, double SumAbs) point,
-        Rect plot, double maxIteration, double maxSum)
+    private static Point ToPoint((int Iteration, double Time, double SumLap) point,
+        Rect plot, double maxIteration, double minSum, double maxSum)
     {
         double x = plot.X + point.Iteration / maxIteration * plot.Width;
-        double y = plot.Bottom - Math.Clamp(point.SumAbs / maxSum, 0.0, 1.0) * plot.Height;
+        double y = plot.Bottom
+            - Math.Clamp((point.SumLap - minSum) / (maxSum - minSum), 0.0, 1.0) * plot.Height;
         return new Point(x, y);
     }
 
