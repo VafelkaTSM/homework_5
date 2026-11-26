@@ -42,10 +42,15 @@ CRITERION = nn.CrossEntropyLoss()
 # Аугментации и нормализация выполняются на GPU батчами (transforms v2
 # поддерживают батчевые CUDA-тензоры), CPU-конвейер с DataLoader не нужен
 TRAIN_TRANSFORM = v2.Compose([
+    # Переводим в float32 и масштабируем значения из [0, 255] в [0.0, 1.0] (замена ToTensor)
     v2.ToDtype(torch.float32, scale=True),
+    # Геометрические искажения: поворот ±15°, сдвиг до 10%, масштаб 90-110%
     v2.RandomAffine(degrees=(-15, 15), translate=(0.1, 0.1), scale=(0.9, 1.1)),
+    # Небольшое перспективное искажение (имитация наклона листа) с вероятностью 30%
     v2.RandomPerspective(distortion_scale=0.2, p=0.3),
+    # Случайное перекрытие части цифры (Cutout / Random Erasing)
     v2.RandomErasing(p=0.2, scale=(0.02, 0.12)),
+    # Нормализация по среднему и стандартному отклонению MNIST
     v2.Normalize(mean=[0.1307], std=[0.3081]),
 ])
 
